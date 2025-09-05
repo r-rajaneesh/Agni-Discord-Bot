@@ -1,0 +1,78 @@
+{
+	"commands": {
+		"bookmark": {
+			"embeds": [
+				{
+					"title": "Bookmark",
+					"description": "This message is already bookmarked to your DM.\n{{message_link}}"
+				},
+				{
+					"title": "Bookmark",
+					"description": "Please enable your DM to bookmark messages."
+				},
+				{
+					"title": "Bookmark Notification",
+					"description": "Details to the Bookmarked Message",
+					"fields": [
+						{ "name": "Attachments", "value": "`{{attachment_types}}`." },
+						{ "name": "Embeds", "value": "`{{embeds_length}}` embeds." },
+						{
+							"name": "Original Message",
+							"value": "Jump to {{original_message_link}}."
+						}
+					],
+					"footer": { "text": "DMBM • {{original_message_id}}" }
+				},
+				{
+					"title": "Bookmark Content"
+				},
+				{
+					"title": "Bookmark",
+					"description": "This message has been bookmarked in your Private Message {{message_link}}",
+					"footer": { "text": "Check your DM Inbox" }
+				}
+			]
+		}
+	},
+	"events": {
+		"ready": {
+			"embeds": []
+		},
+		"interactionCreate": {
+			"executeError": {
+				"embeds": [
+					{
+						"title": "Something Bad Happened!",
+						"description": "Contact Developer"
+					}
+				]
+			}
+		},
+		"messageCreate": {
+			"cooldown": {
+				"embeds": [
+					{
+						"title": "Cooldown",
+						"description": "You are currently on a cooldown to access the bot's commands, wait <t:{{cooldown_time}}:R> to try again"
+					}
+				]
+			},
+			"executeError": {
+				"embeds": [
+					{
+						"title": "Something Bad Happened!",
+						"description": "Contact Developer"
+					}
+				]
+			}
+		}
+	},
+	"disabled": {
+		"embeds": [
+			{
+				"title": "Command Locked",
+				"desciption": "{{feature_name}} is currently disabled on {{client_name}}, try contacting the [{{support_server_link}}](support server)"
+			}
+		]
+	}
+}

@@ -1,4 +1,4 @@
-export default {
+module.exports = {
 	name: "Agni Discord Bot",
 	script: "index.ts",
 	interpreter: "bun",

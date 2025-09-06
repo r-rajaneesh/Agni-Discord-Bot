@@ -22,6 +22,7 @@ export default new CommandBuilder({
 			const BookmarkedMessage = await client.db.Bookmark.findOne({ messageID: BookmarkedMessageID });
 			BookmarkedMessage?.DM.remove({ messageID: interaction.message.id });
 			await BookmarkedMessage?.save();
+			if (BookmarkedMessage?.DM.length === 0) await client.db.Bookmark.deleteOne({ messageID: BookmarkedMessageID });
 		} catch (error) {
 			client.log.error(error);
 		} finally {

@@ -100,17 +100,13 @@ export default new CommandBuilder({
 				}),
 			);
 		interaction.targetMessage.embeds.slice(0, 11).forEach((embed) => {
-			attachingEmbeds.push(
-				client.makeEmbed({
-					...embed.toJSON(),
-					url: interaction.targetMessage.url,
-					color: client.config.colours.blurple,
-					image: {
-						url: embed.image ? embed.image.url : "",
-						proxyURL: embed.image?.proxyURL ? embed.image?.proxyURL : "",
-					},
-				}),
-			);
+			const Embed = client.makeEmbed({
+				...embed.toJSON(),
+				url: interaction.targetMessage.url,
+				color: client.config.colours.blurple,
+			});
+			embed?.image?.url ? Embed.setImage(embed.image.url) : undefined;
+			attachingEmbeds.push(Embed);
 		});
 		// interaction.targetMessage.attachments.at(0);
 		interaction.targetMessage.attachments.toJSON().at(0)?.contentType == "";

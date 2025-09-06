@@ -64,7 +64,10 @@ export default new CommandBuilder({
 					{
 						name: locale.t("commands.bookmark.embeds[2].fields[0].name"),
 						value: locale.t("commands.bookmark.embeds[2].fields[0].value", {
-							attachment_types: interaction.targetMessage.attachments.map((atv) => atv.contentType).join(", ") ?? "0",
+							attachment_types:
+								interaction.targetMessage.attachments.size > 0
+									? interaction.targetMessage.attachments.map((atv) => atv.contentType).join(", ")
+									: "0",
 						}),
 					},
 					{

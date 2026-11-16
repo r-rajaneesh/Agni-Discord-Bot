@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+	cachedChunkCount,
 	canUnlock,
+	CHUNK,
+	dropLand,
 	chunkOf,
 	HOUSE,
 	LAND_PORTAL,
@@ -56,5 +59,23 @@ describe("chunks", () => {
 		expect(unlockPrice(10)).toBe(675);
 		expect(unlockPrice(19)).toBe(10053);
 		expect(unlockPrice(29)).toBe(202137);
+	});
+	test("landTerrain returns base terrain inside unlocked chunks", () => {
+		const u = new Set(START_CHUNKS);
+		for (let y = -16; y < 32; y += 3)
+			for (let x = -16; x < 32; x += 3) expect(landTerrain(5, u, x, y)).toBe(landBaseTerrain(5, x, y));
+	});
+	test("every tile of a locked chunk is T.fence", () => {
+		const u = new Set(START_CHUNKS);
+		for (let y = 0; y < CHUNK; y++)
+			for (let x = 2 * CHUNK; x < 3 * CHUNK; x++) expect(landTerrain(1, u, x, y)).toBe(T.fence);
+	});
+	test("dropLand clears a seed's cached chunks", () => {
+		const seed = 424242;
+		const before = landBaseTerrain(seed, 3, 4);
+		expect(cachedChunkCount(seed)).toBeGreaterThan(0);
+		dropLand(seed);
+		expect(cachedChunkCount(seed)).toBe(0);
+		expect(landBaseTerrain(seed, 3, 4)).toBe(before);
 	});
 });

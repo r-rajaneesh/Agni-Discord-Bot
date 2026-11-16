@@ -18,11 +18,21 @@ export const LAND_PORTAL = { x: 3, y: 9 };
 const hash = (seed: number, cx: number, cy: number) =>
 	(Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(cx, 0x85ebca6b) ^ Math.imul(cy, 0xc2b2ae35)) | 0;
 
-// Terrain of one chunk, cached per (seed, chunk): scatter first, then forced areas
-const cache = new Map<string, Uint8Array>();
+// Terrain of one chunk, cached per land (seed) so a whole land can be dropped on unload
+const cache = new Map<number, Map<number, Uint8Array>>();
+const numKey = (cx: number, cy: number) => cx * 4194304 + cy;
+
+export function dropLand(seed: number): void {
+	cache.delete(seed);
+}
+export const cachedChunkCount = (seed: number) => cache.get(seed)?.size ?? 0;
+
+// Scatter first, then forced areas
 function chunkTiles(seed: number, cx: number, cy: number): Uint8Array {
-	const k = `${seed}|${cx},${cy}`;
-	const hit = cache.get(k);
+	let land = cache.get(seed);
+	if (!land) cache.set(seed, (land = new Map()));
+	const k = numKey(cx, cy);
+	const hit = land.get(k);
 	if (hit) return hit;
 	const rand = prng(hash(seed, cx, cy));
 	const m = new Uint8Array(CHUNK * CHUNK).fill(T.grass);
@@ -49,15 +59,17 @@ function chunkTiles(seed: number, cx: number, cy: number): Uint8Array {
 			for (let x = HOUSE.x; x < HOUSE.x + HOUSE.w; x++) m[y * CHUNK + x] = T.house;
 		m[LAND_PORTAL.y * CHUNK + LAND_PORTAL.x] = T.portal;
 	}
-	cache.set(k, m);
+	land.set(k, m);
 	return m;
 }
 
 const mod = (n: number) => ((n % CHUNK) + CHUNK) % CHUNK;
 
 export function landBaseTerrain(seed: number, x: number, y: number): number {
+	x = Math.floor(x);
+	y = Math.floor(y);
 	const { cx, cy } = chunkOf(x, y);
-	return chunkTiles(seed, cx, cy)[mod(y) * CHUNK + mod(x)] ?? T.grass;
+	return chunkTiles(seed, cx, cy)[mod(y) * CHUNK + mod(x)] as number;
 }
 
 // Every tile of a locked chunk is a fence, so it blocks walking

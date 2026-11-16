@@ -10,15 +10,14 @@ export default new EventBuilder({
 		user: Discord.User,
 		details: Discord.MessageReactionEventDetails,
 	) => {
+		// Ignore reactions from bots; the message author may be Agni itself (🗑️ delete relies on that)
+		if (user.bot) return;
 		let message = reaction.message;
-		if (message?.author?.bot || message.interactionMetadata || message.webhookId) return;
 		if (message.partial) message = await message.fetch(true);
+		if (message.webhookId) return;
 
-		let SavedUser = await client.db.User.findOne({ id: message.author.id });
-		let SavedGuild = await client.db.Guild.findOne({ id: message.guildId });
-
-		if (!SavedUser) SavedUser = await client.db.User.create({ id: message.author.id });
-		if (!SavedGuild) SavedGuild = await client.db.Guild.create({ id: message.guildId });
+		await client.db.getUser(user.id);
+		await client.db.getGuild(message.guildId);
 		client.messageCommands
 			.filter((cmd) => cmd.type === "reaction")
 			.forEach(async (command) => {
@@ -28,7 +27,7 @@ export default new EventBuilder({
 					client.log.error(error);
 				} finally {
 					client.log.info(`[MESSAGE REACTION]`, {
-						userID: message.author.id,
+						userID: user.id,
 						commandName: command.name,
 						guildID: message.guildId,
 						channelID: message.channelId,

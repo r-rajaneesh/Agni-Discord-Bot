@@ -14,37 +14,35 @@ export default class LogManager {
 
 		// this.isSeperateManager = true;
 	}
+	// Bun loads .env into process.env, so redact from there. Short values are skipped
+	// to avoid redacting common words like "true" or port numbers.
 	private loadEnvData() {
-		fs.readFileSync(`${process.cwd()}/.env`)
-			.toString()
-			.split("\r\n")
-			.slice(0, -2)
-			.forEach((token) => {
-				let [tokenName, tokenValue]: string[] = token.split("=") as string[];
-
-				if (/\s+/g.exec(tokenValue as string)) return;
-				if (tokenName !== undefined || tokenValue !== undefined) {
-					tokenValue = tokenValue
-						?.replace('"', "")
-						.split("")
-						.reverse()
-						.join("")
-						.replace('"', "")
-						.split("")
-						.reverse()
-						.join("") as string;
-					if (
-						tokenValue.length === 0 ||
-						tokenValue === "" ||
-						tokenValue === undefined ||
-						tokenValue === null ||
-						tokenName?.match(/\s+/g)
-					)
-						return;
-					this.envs.set(tokenName as string, tokenValue);
-				}
-				// this.debug(token);
+		Object.entries(process.env).forEach(([key, value]) => {
+			if (!value || value.length < 8 || /\s/.test(value)) return;
+			if (/^(PATH|HOME|PWD|OLDPWD|SHELL|USER|LOGNAME|TERM|LANG|_)$/.test(key) || key.startsWith("XDG_")) return;
+			this.envs.set(key, value);
+		});
+	}
+	private writeQueue: string[] = [];
+	private writing = false;
+	private ensuredFiles = new Set<string>();
+	// Appends asynchronously and in order, so logging never blocks the event loop.
+	private write(logpath: string, line: string) {
+		this.writeQueue.push(`${logpath}\u0000${line}`);
+		if (!this.writing) void this.drain();
+	}
+	private async drain() {
+		this.writing = true;
+		while (this.writeQueue.length) {
+			const batch = this.writeQueue.splice(0);
+			const byFile = new Map<string, string>();
+			batch.forEach((entry) => {
+				const [file, line] = entry.split("\u0000") as [string, string];
+				byFile.set(file, (byFile.get(file) ?? "") + line);
 			});
+			for (const [file, lines] of byFile) await fs.appendFile(file, lines, { encoding: "utf8" }).catch(() => {});
+		}
+		this.writing = false;
 	}
 	public silentMode() {
 		this.silent = !this.silent;
@@ -86,8 +84,12 @@ export default class LogManager {
 		const year = moment().format("YYYY");
 		const month = moment().format("Mo-MMMM");
 		const daydate = moment().format("Do-dddd");
-		fs.ensureFileSync(path.join("logs", year, month, `${daydate}.log`));
-		return path.join("logs", year, month, `${daydate}.log`);
+		const logpath = path.join("logs", year, month, `${daydate}.log`);
+		if (!this.ensuredFiles.has(logpath)) {
+			fs.ensureFileSync(logpath);
+			this.ensuredFiles.add(logpath);
+		}
+		return logpath;
 	}
 	private getTimeString() {
 		return moment().format("dddd Do MMMM DD/MM/YYYY hh:mm:ss A");
@@ -103,7 +105,7 @@ export default class LogManager {
 				d = JSON.stringify(d, null, "\t");
 			this.envs.forEach(async (value, key) => {
 				if (/\s+/g.exec(value)) return;
-				if (typeof d === "string" && !forTerminal) d = d.replace(value, `[REDACTED_${key}]`);
+				if (typeof d === "string" && !forTerminal) d = d.replaceAll(value, `[REDACTED_${key}]`);
 			});
 			try {
 				if (forTerminal) d = JSON.parse(d);
@@ -150,7 +152,7 @@ export default class LogManager {
 		// fs.appendFileSync(logpath, `\n\n[INFO] - [${time}] - [${trace}] ❯\t${this.processLogData({ data: data })}`, {
 		// 	encoding: "utf8",
 		// });
-		fs.appendFileSync(
+		this.write(
 			logpath,
 			`\n${JSON.stringify({
 				type: "INFO",
@@ -159,9 +161,6 @@ export default class LogManager {
 				trace,
 				data: this.processLogData({ data: data }),
 			})}`,
-			{
-				encoding: "utf8",
-			},
 		);
 	}
 	public debug(...data: any[]) {
@@ -181,7 +180,7 @@ export default class LogManager {
 		// fs.appendFileSync(logpath, `\n\n[DEBUG] - [${time}] - [${trace}] ❯\t${this.processLogData({ data: data })}`, {
 		// 	encoding: "utf8",
 		// });
-		fs.appendFileSync(
+		this.write(
 			logpath,
 			`\n${JSON.stringify({
 				type: "DEBUG",
@@ -190,9 +189,6 @@ export default class LogManager {
 				trace,
 				data: this.processLogData({ data: data }),
 			})}`,
-			{
-				encoding: "utf8",
-			},
 		);
 	}
 	public warn(...data: any[]) {
@@ -212,7 +208,7 @@ export default class LogManager {
 		// fs.appendFileSync(logpath, `\n\n[WARN] - [${time}] - [${trace}] ❯\t${this.processLogData({ data: data })}`, {
 		// 	encoding: "utf8",
 		// });
-		fs.appendFileSync(
+		this.write(
 			logpath,
 			`\n${JSON.stringify({
 				type: "WARN",
@@ -221,9 +217,6 @@ export default class LogManager {
 				trace,
 				data: this.processLogData({ data: data }),
 			})}`,
-			{
-				encoding: "utf8",
-			},
 		);
 	}
 	public error(...data: any[]) {
@@ -242,7 +235,7 @@ export default class LogManager {
 		// fs.appendFileSync(logpath, `\n\n[ERROR] - [${time}] - [${trace}] ❯\t${this.processLogData({ data: data })}`, {
 		// 	encoding: "utf8",
 		// });
-		fs.appendFileSync(
+		this.write(
 			logpath,
 			`\n${JSON.stringify({
 				type: "ERROR",
@@ -251,9 +244,6 @@ export default class LogManager {
 				trace,
 				data: this.processLogData({ data: data }),
 			})}`,
-			{
-				encoding: "utf8",
-			},
 		);
 	}
 	public critical(...data: any[]) {
@@ -272,7 +262,7 @@ export default class LogManager {
 		// fs.appendFileSync(logpath, `\n\n[CRITICAL] - [${time}] - [${trace}] ❯\t${this.processLogData({ data: data })}`, {
 		// 	encoding: "utf8",
 		// });
-		fs.appendFileSync(
+		this.write(
 			logpath,
 			`\n${JSON.stringify({
 				type: "CRITICAL",
@@ -281,9 +271,6 @@ export default class LogManager {
 				trace,
 				data: this.processLogData({ data: data }),
 			})}`,
-			{
-				encoding: "utf8",
-			},
 		);
 	}
 }

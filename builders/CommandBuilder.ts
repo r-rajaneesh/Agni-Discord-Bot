@@ -7,21 +7,11 @@ class CommandBuilder {
 	public permissions: Discord.PermissionsBitField[];
 	public isOwnerOnly: boolean;
 	public isLocked: boolean;
-	public type: "message" | "slash_command" | "contextmenu" | "button" | "select" | "reaction";
+	public type: TCommandBuilder["type"];
+	public customIdPrefix?: string;
 	public cooldown: number;
-	public builder?: Discord.SlashCommandBuilder | Discord.ContextMenuCommandBuilder | Discord.ButtonBuilder;
-	public execute: (options: {
-		client: ClientManager;
-		message: Discord.Message | Discord.MessageReaction | null;
-		args: string[];
-		interaction:
-			| Discord.Interaction
-			| Discord.CommandInteraction
-			| Discord.ContextMenuCommandInteraction
-			| Discord.ButtonInteraction
-			| Discord.AnySelectMenuInteraction
-			| null;
-	}) => Promise<any>;
+	public builder?: TCommandBuilder["builder"];
+	public execute: TCommandBuilder["execute"];
 	constructor(CommandBuilderOptions: TCommandBuilder) {
 		this.name = CommandBuilderOptions.name;
 		this.description = CommandBuilderOptions.description;
@@ -29,6 +19,7 @@ class CommandBuilder {
 		this.isOwnerOnly = CommandBuilderOptions.isOwnerOnly;
 		this.isLocked = CommandBuilderOptions.isLocked;
 		this.type = CommandBuilderOptions.type;
+		this.customIdPrefix = CommandBuilderOptions.customIdPrefix;
 		this.builder = CommandBuilderOptions.builder;
 		this.cooldown = CommandBuilderOptions.cooldown ?? 3000;
 		this.execute = CommandBuilderOptions.execute;

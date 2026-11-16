@@ -11,13 +11,10 @@ export default new EventBuilder({
 		if (message.author.bot || message.interactionMetadata || message.webhookId) return;
 		if (message.partial) message = await message.fetch(true);
 
-		let SavedUser = await client.db.User.findOne({ id: message.author.id });
-		let SavedGuild = await client.db.Guild.findOne({ id: message.guildId });
-
-		if (!SavedUser) SavedUser = await client.db.User.create({ id: message.author.id });
-		if (!SavedGuild) SavedGuild = await client.db.Guild.create({ id: message.guildId });
-
 		if (!message.content.startsWith(client.config.bot.commands.prefix)) return;
+
+		const SavedUser = await client.db.getUser(message.author.id);
+		await client.db.getGuild(message.guildId);
 
 		let argStr = message.content.replace(client.config.bot.commands.prefix, "").split("").join("");
 		[...message.content.matchAll(/\".*?\"|\'.*?\'/g)]
@@ -41,15 +38,15 @@ export default new EventBuilder({
 			.filter((cmd) => cmd.type === "message")
 			.get(commandName as string) as TCommandBuilder;
 		if (!command) return;
-		const locale = client.locale.getlocale("en");
+		const locale = client.locale.getlocale((SavedUser?.locale as Tlanguages) ?? "en");
 		if (message.author.id !== client.config.owner.userid) {
 			if (command.isOwnerOnly) return;
-			if (!command.isLocked)
+			if (command.isLocked)
 				return await message.reply({
 					embeds: [
 						client.makeEmbed({
-							title: locale.t("disabled.embeds.title"),
-							description: locale.t("disabled.embeds.description", {
+							title: locale.t("disabled.embeds[0].title"),
+							description: locale.t("disabled.embeds[0].description", {
 								client_name: client.user?.username,
 								feature_name: command.name,
 								support_server_link: `${client.config.bot.supportServerInvite}`,
@@ -58,28 +55,28 @@ export default new EventBuilder({
 						}),
 					],
 				});
-			const commandCooldown: Discord.Collection<string, number> = client.cooldown.get(
-				command.name,
-			) as Discord.Collection<string, number>;
-			if (!command.cooldown) command.cooldown = 5;
-			const cooldownTime = new Date().getTime() / 1000 + command.cooldown * 1000;
-			if (!commandCooldown.has(message.author.id)) {
-				commandCooldown.set(message.author.id, cooldownTime);
-				setTimeout(() => {
-					commandCooldown.delete(message.author.id);
-				}, cooldownTime * 1000);
+			// command.cooldown is in milliseconds (CommandBuilder defaults it to 3000)
+			const cooldownMs = command.cooldown ?? 3000;
+			let commandCooldown = client.cooldown.get(command.name) as Discord.Collection<string, number> | undefined;
+			if (!commandCooldown) {
+				commandCooldown = new Discord.Collection<string, number>();
+				client.cooldown.set(command.name, commandCooldown);
 			}
-			return await message.reply({
-				embeds: [
-					client.makeEmbed({
-						title: locale.t("events.messageCreate.cooldown.embeds[0].title"),
-						description: locale.t("events.messageCreate.cooldown.embeds[0].description", {
-							cooldown_time: new Date().getTime() / 1000 + command.cooldown * 1000,
+			const expiresAt = commandCooldown.get(message.author.id);
+			if (expiresAt && expiresAt > Date.now())
+				return await message.reply({
+					embeds: [
+						client.makeEmbed({
+							title: locale.t("events.messageCreate.cooldown.embeds[0].title"),
+							description: locale.t("events.messageCreate.cooldown.embeds[0].description", {
+								cooldown_time: Math.ceil(expiresAt / 1000),
+							}),
+							color: client.config.colours.yellow,
 						}),
-						color: client.config.colours.yellow,
-					}),
-				],
-			});
+					],
+				});
+			commandCooldown.set(message.author.id, Date.now() + cooldownMs);
+			setTimeout(() => commandCooldown.delete(message.author.id), cooldownMs);
 		}
 		try {
 			await command.execute({ client, message, args, interaction: null, reaction: null, user: null });
@@ -88,8 +85,8 @@ export default new EventBuilder({
 			return await message.reply({
 				embeds: [
 					client.makeEmbed({
-						title: locale.t("events.messageCreate.embeds[0].title"),
-						description: locale.t("events.messageCreate.embeds[0].description"),
+						title: locale.t("events.messageCreate.executeError.embeds[0].title"),
+						description: locale.t("events.messageCreate.executeError.embeds[0].description"),
 						color: client.config.colours.red,
 					}),
 				],

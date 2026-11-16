@@ -17,8 +17,15 @@ declare global {
 		filePath?: string;
 		isLocked: boolean;
 		type: "message" | "slash_command" | "contextmenu" | "button" | "select" | "reaction";
+		/** Route for component/modal customIds shaped `<route>:<action>:<arg...>` */
+		customIdPrefix?: string;
 		cooldown?: number;
-		builder?: Discord.SlashCommandBuilder | Discord.ContextMenuCommandBuilder | Discord.ButtonBuilder;
+		builder?:
+			| Discord.SlashCommandBuilder
+			| Discord.SlashCommandSubcommandsOnlyBuilder
+			| Discord.SlashCommandOptionsOnlyBuilder
+			| Discord.ContextMenuCommandBuilder
+			| Discord.ButtonBuilder;
 		execute(options: {
 			client: ClientManager;
 			message: Discord.Message | null;
@@ -31,6 +38,7 @@ declare global {
 				| Discord.ContextMenuCommandInteraction
 				| Discord.ButtonInteraction
 				| Discord.AnySelectMenuInteraction
+				| Discord.ModalSubmitInteraction
 				| null;
 		}): Promise<any>;
 	}

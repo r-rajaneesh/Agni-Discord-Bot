@@ -6,6 +6,10 @@ import DatabaseManager from "./DatabaseManager.ts";
 import Localemanager from "./LocaleManager.ts";
 import LogManager from "./LogManager.ts";
 import mongoose from "mongoose";
+import EconomyManager from "./EconomyManager.ts";
+import GameManager from "./GameManager.ts";
+import PaymentManager from "./PaymentManager.ts";
+import RenderManager from "./RenderManager.ts";
 
 class ClientManager extends Discord.Client {
 	public ClientOptions: Discord.ClientOptions;
@@ -18,31 +22,20 @@ class ClientManager extends Discord.Client {
 	public config: typeof TClientConfig;
 	public locale: Localemanager;
 	public REST: Discord.REST;
+	public economy: EconomyManager;
+	public render: RenderManager;
+	public game: GameManager;
+	public payments: PaymentManager;
 
 	constructor(
 		ClientOptions: Discord.ClientOptions = {
+			// Only non-privileged intents plus MessageContent (needed while prefix commands exist)
 			intents: [
-				"AutoModerationConfiguration",
-				"AutoModerationExecution",
-				"DirectMessagePolls",
-				"DirectMessageReactions",
-				"DirectMessages",
-				"DirectMessageTyping",
-				"GuildBans",
-				"GuildEmojisAndStickers",
-				"GuildExpressions",
-				"GuildIntegrations",
-				"GuildInvites",
-				"GuildMembers",
-				"GuildMessageReactions",
-				"GuildMessages",
-				"GuildMessageTyping",
-				"GuildModeration",
-				"GuildPresences",
 				"Guilds",
-				"GuildScheduledEvents",
-				"GuildVoiceStates",
-				"GuildWebhooks",
+				"GuildMessages",
+				"GuildMessageReactions",
+				"DirectMessages",
+				"DirectMessageReactions",
 				"MessageContent",
 			],
 			partials: [
@@ -79,6 +72,10 @@ class ClientManager extends Discord.Client {
 		this.db = DatabaseManager;
 		this.config = ClientConfig;
 		this.locale = new Localemanager(this);
+		this.economy = new EconomyManager({ warn: (msg) => this.log.warn(msg) });
+		this.render = new RenderManager();
+		this.game = new GameManager(this);
+		this.payments = new PaymentManager(this);
 		this.REST = new Discord.REST({ version: "10" }).setToken(process.env.BOT_TOKEN as string);
 		// Collections
 		this.events = new Discord.Collection();
@@ -95,7 +92,10 @@ class ClientManager extends Discord.Client {
 	}
 	public async connectDatabase() {
 		try {
-			await mongoose.connect("mongodb://localhost:27017/agni", { appName: "Agni Preview" });
+			// Transactions (economy ledger) need a replica set, e.g. mongodb://localhost:27017/agni?replicaSet=rs0
+			await mongoose.connect(process.env.DB_URL ?? "mongodb://localhost:27017/agni?replicaSet=rs0", {
+				appName: "Agni Preview",
+			});
 			this.log.info("Successfully connected to the Mongo Database");
 		} catch (error) {
 			this.log.error(error);
@@ -139,19 +139,23 @@ class ClientManager extends Discord.Client {
 		this.log.debug(this.applicationCommands.toJSON());
 		this.log.debug(this.messageCommands.toJSON());
 	}
-	public async registerCommands() {
-		await this.REST.put(Discord.Routes.applicationCommands(this.user?.id as string), {
-			body: this.applicationCommands
-				.filter((cmd) => cmd.type === "slash_command" || cmd.type === "contextmenu")
-				.map((cmd) => cmd.builder?.toJSON()),
-		});
-
-		this.log.info(
-			`Successfully registered ${
-				this.applicationCommands.filter((cmd) => cmd.type === "slash_command" || cmd.type === "contextmenu").toJSON()
-					.length
-			} Application Commands`,
-		);
+	/**
+	 * Registers slash/context commands globally. Skips the API call when the command JSON
+	 * matches the last registered hash, so restart loops do not hit the registration rate limit.
+	 */
+	public async registerCommands(force = false) {
+		const body = this.applicationCommands
+			.filter((cmd) => (cmd.type === "slash_command" || cmd.type === "contextmenu") && cmd.builder)
+			.map((cmd) => cmd.builder?.toJSON());
+		const hash = new Bun.CryptoHasher("sha256").update(JSON.stringify(body)).digest("hex");
+		const saved = await this.db.Meta.findOne({ key: "commandHash" });
+		if (!force && saved?.value === hash) {
+			this.log.info("Application commands unchanged, skipping registration.");
+			return;
+		}
+		await this.REST.put(Discord.Routes.applicationCommands(this.user?.id as string), { body });
+		await this.db.Meta.updateOne({ key: "commandHash" }, { $set: { value: hash } }, { upsert: true });
+		this.log.info(`Successfully registered ${body.length} Application Commands`);
 	}
 	public makeEmbed(data: Discord.EmbedData | Discord.APIEmbed) {
 		const embed = new Discord.EmbedBuilder();

@@ -71,7 +71,7 @@
 		"embeds": [
 			{
 				"title": "Command Locked",
-				"desciption": "{{feature_name}} is currently disabled on {{client_name}}, try contacting the [{{support_server_link}}](support server)"
+				"description": "{{feature_name}} is currently disabled on {{client_name}}, try contacting the [{{support_server_link}}](support server)"
 			}
 		]
 	}

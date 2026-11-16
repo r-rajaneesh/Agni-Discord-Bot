@@ -1,7 +1,13 @@
 // Pure game rules. No Discord or Mongo imports, so everything here is unit-testable.
+// A game runs in instances: a player's private land, or a public lobby copy of the open world.
+import { HOUSE, LAND_SPAWN, START_CHUNKS, landTerrain } from "./chunks";
 import { CROPS } from "./data/crops";
 import { ITEMS } from "./data/items";
-import { MAP_H, MAP_W, PLOTS, SPAWN, T, baseTerrain, isWalkableTerrain, plotAt } from "./map";
+import { T, isWalkableTerrain } from "./map";
+import type { TDir } from "./protocol";
+import { TOWN_SPAWN, WORLD_SEED, fieldCrop, worldTerrain } from "./world";
+
+export type { TDir };
 
 /** One in-game day (06:00 → 02:00) lasts 20 real minutes; one game minute = one real second. */
 export const DAY_MS = 20 * 60 * 1000;
@@ -10,7 +16,24 @@ export const ENERGY_REGEN_MS = 20_000;
 const TREE_RESPAWN_DAYS = 3;
 const ROCK_RESPAWN_DAYS = 2;
 
-export type TDir = "u" | "d" | "l" | "r";
+// Gathering in a public lobby grows back after a few real minutes
+export const CROP_REGROW_MS = 5 * 60_000;
+export const TREE_REGROW_MS = 3 * 60_000;
+export const ROCK_REGROW_MS = 2 * 60_000;
+export const ANIMAL_RESPAWN_MS = 60_000;
+
+export const WALK_SPEED = 4.5; // tiles per second
+export const PLAYER_BOX = 0.6; // tiles, square, centred on the player
+export const TICK_MS = 50;
+// Movement is applied in steps no longer than this, so a long dtMs cannot pass through a wall
+const MAX_STEP = 0.25;
+const EPS = 1e-6;
+// Reach of the faced point and of an animal hit, in tiles
+const REACH = 0.8;
+const HIT_RADIUS = 1.2;
+
+export const HOUSE_DOOR = { x: HOUSE.x + 2, y: HOUSE.y + HOUSE.h - 1 };
+
 export const DIRS: Record<TDir, [number, number]> = { u: [0, -1], d: [0, 1], l: [-1, 0], r: [1, 0] };
 
 export interface TTileState {
@@ -18,29 +41,35 @@ export interface TTileState {
 	cropId?: string;
 	plantedDay?: number;
 	wateredDays: number[];
-	/** Day a tree/rock was removed; it grows back after its respawn time */
+	/** Day a tree/rock was removed on private land; it grows back after its respawn time */
 	clearedDay?: number;
+	/** Public lobbies: time (ms) a gathered tree, rock or field grows back */
+	regrowAt?: number;
 }
 
 export interface TPlayerState {
 	userId: string;
 	name: string;
+	/** Player centre in tile units */
 	x: number;
 	y: number;
 	facing: TDir;
 	energy: number;
 	lastEnergyAt: number;
 	equipped: string;
-	plotId: number | null;
 	colour: string;
-	/** Farm Pass holder (cosmetic crown); refreshed on /farm play */
+	/** Farm Pass holder (cosmetic crown) */
 	premium?: boolean;
 }
 
-export interface TWorldState {
-	guildId: string;
+export interface TInstance {
+	id: string; // "land:<landId>" | "lobby:<n>"
+	kind: "land" | "world";
+	lobby?: { n: number; label: string; homeGuildId: string | null }; // world only
+	seed: number; // land seed; WORLD_SEED for the world
+	ownerId: string | null; // land owner; null for the world
 	epoch: number;
-	plotOwners: (string | null)[];
+	unlocked: Set<string>; // chunk keys; empty for the world (every in-bounds chunk is open)
 	tiles: Map<string, TTileState>;
 	players: Map<string, TPlayerState>;
 }
@@ -54,6 +83,10 @@ export interface TActionResult {
 	give?: Record<string, number>;
 	energyCost?: number;
 	menu?: "shop";
+	/** The player stepped into a portal; the caller moves them to this instance kind */
+	travel?: "world" | "land";
+	/** An animal was hit; the caller applies the hit */
+	hitAnimalId?: number;
 	/** Tile keys whose state apply() changes (for persistence) */
 	changedTiles?: string[];
 	apply?: () => void;
@@ -61,8 +94,22 @@ export interface TActionResult {
 
 export const tileKey = (x: number, y: number) => `${x},${y}`;
 
-export function createWorld(guildId: string, now: number): TWorldState {
-	return { guildId, epoch: now, plotOwners: PLOTS.map(() => null), tiles: new Map(), players: new Map() };
+export function createLand(id: string, ownerId: string, seed: number, epoch: number): TInstance {
+	return { id, kind: "land", seed, ownerId, epoch, unlocked: new Set(START_CHUNKS), tiles: new Map(), players: new Map() };
+}
+
+export function createLobby(n: number, label: string, homeGuildId: string | null, epoch: number): TInstance {
+	return {
+		id: `lobby:${n}`,
+		kind: "world",
+		lobby: { n, label, homeGuildId },
+		seed: WORLD_SEED,
+		ownerId: null,
+		epoch,
+		unlocked: new Set(),
+		tiles: new Map(),
+		players: new Map(),
+	};
 }
 
 export function clock(epoch: number, now: number) {
@@ -90,14 +137,23 @@ function spendEnergy(p: TPlayerState, now: number, cost: number) {
 	p.lastEnergyAt = now;
 }
 
-/** Terrain after removed trees/rocks are taken into account */
-export function terrainAt(world: TWorldState, x: number, y: number, day: number) {
-	const base = baseTerrain(x, y);
+export const canBuild = (inst: TInstance, userId: string) => inst.kind === "land" && inst.ownerId === userId;
+
+/** Terrain after removed trees/rocks are taken into account. Non-finite coordinates are blocked. */
+export function terrainAt(inst: TInstance, x: number, y: number, now: number): number {
+	if (!Number.isFinite(x) || !Number.isFinite(y)) return inst.kind === "world" ? T.water : T.fence;
+	x = Math.floor(x);
+	y = Math.floor(y);
+	const base = inst.kind === "world" ? worldTerrain(x, y) : landTerrain(inst.seed, inst.unlocked, x, y);
 	if (base !== T.tree && base !== T.rock) return base;
-	const cleared = world.tiles.get(tileKey(x, y))?.clearedDay;
-	if (cleared === undefined) return base;
+	const tile = inst.tiles.get(tileKey(x, y));
+	if (!tile) return base;
+	if (inst.kind === "world") return tile.regrowAt !== undefined && now < tile.regrowAt ? T.grass : base;
+	// Land cleared for farming stays cleared
+	if (tile.tilled || tile.cropId) return T.grass;
+	if (tile.clearedDay === undefined) return base;
 	const respawn = base === T.tree ? TREE_RESPAWN_DAYS : ROCK_RESPAWN_DAYS;
-	return day < cleared + respawn ? T.grass : base;
+	return clock(inst.epoch, now).day < tile.clearedDay + respawn ? T.grass : base;
 }
 
 export function cropStage(tile: TTileState, day: number) {
@@ -109,66 +165,80 @@ export function cropStage(tile: TTileState, day: number) {
 	return { crop, grown, ready: grown >= crop.growDays, wateredToday: tile.wateredDays.includes(day) };
 }
 
-export function playerAt(world: TWorldState, x: number, y: number, exceptId?: string) {
-	for (const p of world.players.values()) if (p.x === x && p.y === y && p.userId !== exceptId) return p;
+function playerAt(inst: TInstance, x: number, y: number, exceptId?: string) {
+	for (const p of inst.players.values())
+		if (Math.floor(p.x) === x && Math.floor(p.y) === y && p.userId !== exceptId) return p;
 	return undefined;
 }
 
-const PALETTE = ["#e74c3c", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#f1c40f", "#e84393", "#2ecc71"];
+// True when a player box centred at (x, y) touches only walkable tiles
+function boxFits(inst: TInstance, x: number, y: number, now: number) {
+	if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+	const h = PLAYER_BOX / 2;
+	for (let ty = Math.floor(y - h + EPS); ty <= Math.floor(y + h - EPS); ty++)
+		for (let tx = Math.floor(x - h + EPS); tx <= Math.floor(x + h - EPS); tx++)
+			if (!isWalkableTerrain(terrainAt(inst, tx, ty, now))) return false;
+	return true;
+}
 
-export function joinWorld(world: TWorldState, userId: string, name: string, now: number) {
-	let p = world.players.get(userId);
-	if (!p) {
-		p = {
-			userId,
-			name,
-			x: SPAWN.x,
-			y: SPAWN.y,
-			facing: "d",
-			energy: MAX_ENERGY,
-			lastEnergyAt: now,
-			equipped: "hoe",
-			plotId: null,
-			colour: PALETTE[world.players.size % PALETTE.length] as string,
-		};
-		world.players.set(userId, p);
-	}
-	p.name = name;
-	if (p.plotId === null) {
-		const free = world.plotOwners.findIndex((o) => o === null);
-		if (free !== -1) {
-			world.plotOwners[free] = userId;
-			p.plotId = free;
-		}
-	}
+/** Adds a player at `at` when it is walkable, else at the instance spawn tile centre */
+export function enter(
+	inst: TInstance,
+	base: Omit<TPlayerState, "x" | "y" | "facing">,
+	at?: { x: number; y: number; facing: TDir },
+): TPlayerState {
+	// Checked as if every cleared tree and rock had grown back, so no one enters inside one
+	const now = Number.MAX_SAFE_INTEGER;
+	const spawn = inst.kind === "world" ? TOWN_SPAWN : LAND_SPAWN;
+	const p: TPlayerState =
+		at && boxFits(inst, at.x, at.y, now)
+			? { ...base, x: at.x, y: at.y, facing: at.facing }
+			: { ...base, x: spawn.x + 0.5, y: spawn.y + 0.5, facing: "d" };
+	inst.players.set(p.userId, p);
 	return p;
 }
 
-export function move(world: TWorldState, userId: string, dir: TDir, now: number): TActionResult {
-	const p = world.players.get(userId);
-	if (!p) return { ok: false, msg: "You are not in this world." };
-	// Pressing any direction other than the one faced only turns the player; the next press moves
-	if (p.facing !== dir) {
-		p.facing = dir;
-		return { ok: true, msg: "" };
+// Moves one axis by d (|d| ≤ MAX_STEP). When blocked, stops flush against the tile edge.
+function moveAxis(inst: TInstance, p: TPlayerState, axis: "x" | "y", d: number, now: number) {
+	if (d === 0) return;
+	const h = PLAYER_BOX / 2;
+	const next = p[axis] + d;
+	const fits = (v: number) => (axis === "x" ? boxFits(inst, v, p.y, now) : boxFits(inst, p.x, v, now));
+	if (fits(next)) {
+		p[axis] = next;
+		return;
 	}
-	p.facing = dir;
-	const [dx, dy] = DIRS[dir];
-	const nx = p.x + dx;
-	const ny = p.y + dy;
-	const { day } = clock(world.epoch, now);
-	if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H || !isWalkableTerrain(terrainAt(world, nx, ny, day)))
-		return { ok: false, msg: "Something is in the way." };
-	const other = playerAt(world, nx, ny, userId);
-	if (other) return { ok: false, msg: `${other.name} is standing there.` };
-	p.x = nx;
-	p.y = ny;
-	return { ok: true, msg: "" };
+	const flush = d > 0 ? Math.floor(next + h - EPS) - h : Math.floor(next - h + EPS) + 1 + h;
+	if ((d > 0 ? flush > p[axis] : flush < p[axis]) && fits(flush)) p[axis] = flush;
 }
 
+/** Moves a player by held direction for dtMs. Players pass through each other. */
+export function simulate(inst: TInstance, userId: string, dx: -1 | 0 | 1, dy: -1 | 0 | 1, dtMs: number, now: number): void {
+	const p = inst.players.get(userId);
+	if (!p || (dx === 0 && dy === 0) || !(dtMs > 0) || !Number.isFinite(dtMs)) return;
+	// Facing follows the dominant axis; on a diagonal keep the current facing if it is one of the two
+	const h: TDir = dx > 0 ? "r" : "l";
+	const v: TDir = dy > 0 ? "d" : "u";
+	if (dy === 0) p.facing = h;
+	else if (dx === 0) p.facing = v;
+	else if (p.facing !== h && p.facing !== v) p.facing = h;
+
+	// At most one second per call, so a stalled caller cannot ask for an unbounded number of steps
+	const dist = (WALK_SPEED * Math.min(dtMs, 1000)) / 1000;
+	const len = Math.hypot(dx, dy);
+	const steps = Math.ceil(dist / MAX_STEP);
+	const sx = ((dx / len) * dist) / steps;
+	const sy = ((dy / len) * dist) / steps;
+	for (let i = 0; i < steps; i++) {
+		moveAxis(inst, p, "x", sx, now);
+		moveAxis(inst, p, "y", sy, now);
+	}
+}
+
+/** Tile containing the point REACH tiles ahead of the player centre */
 export function facedTile(p: TPlayerState) {
 	const [dx, dy] = DIRS[p.facing];
-	return { x: p.x + dx, y: p.y + dy };
+	return { x: Math.floor(p.x + dx * REACH), y: Math.floor(p.y + dy * REACH) };
 }
 
 // Deterministic ore roll so the result does not depend on who processes the action
@@ -180,55 +250,104 @@ function oreRoll(x: number, y: number, day: number) {
 	return "stone";
 }
 
-/** Context action on the faced tile with the equipped item. `inventory` is a read-only snapshot. */
-export function use(world: TWorldState, userId: string, now: number, inventory: Record<string, number>): TActionResult {
-	const p = world.players.get(userId);
-	if (!p) return { ok: false, msg: "You are not in this world." };
+const READ_ONLY = "You can only build on your own land.";
+const NOT_YOURS = "This isn't your land.";
+
+/**
+ * Context action on the faced tile with the equipped item. `inventory` is a read-only snapshot.
+ * `animals` are checked first: one whose centre is within HIT_RADIUS of the faced point is hit.
+ */
+export function use(
+	inst: TInstance,
+	userId: string,
+	now: number,
+	inventory: Record<string, number>,
+	animals?: { id: number; x: number; y: number }[],
+): TActionResult {
+	const p = inst.players.get(userId);
+	if (!p) return { ok: false, msg: "You are not here." };
 	const { x, y } = facedTile(p);
-	const { day } = clock(world.epoch, now);
-	const terrain = terrainAt(world, x, y, day);
+	const { day } = clock(inst.epoch, now);
+	const terrain = terrainAt(inst, x, y, now);
 	const key = tileKey(x, y);
-	const tile = world.tiles.get(key);
+	const tile = inst.tiles.get(key);
 	const energy = currentEnergy(p, now);
-	const plot = plotAt(x, y);
-	const ownsPlot = plot !== undefined && world.plotOwners[plot.id] === userId;
+	const world = inst.kind === "world";
+	const owner = canBuild(inst, userId);
 	const tool = p.equipped;
 	const item = ITEMS[tool];
-
-	const other = playerAt(world, x, y, userId);
-	if (other) return { ok: true, msg: `👋 You wave at ${other.name}.` };
-	if (terrain === T.door) return { ok: true, msg: "🏪 Welcome to the General Store!", menu: "shop" };
 
 	const needEnergy = (cost: number, r: TActionResult): TActionResult =>
 		energy < cost
 			? { ok: false, msg: "😴 You are too tired. Sleep or wait to regain energy." }
 			: { ...r, energyCost: cost, apply: () => (spendEnergy(p, now, cost), r.apply?.()) };
 
+	if (animals?.length) {
+		const [dx, dy] = DIRS[p.facing];
+		const fx = p.x + dx * REACH;
+		const fy = p.y + dy * REACH;
+		let hit: number | undefined;
+		let best = HIT_RADIUS;
+		for (const a of animals) {
+			const d = Math.hypot(a.x - fx, a.y - fy);
+			if (d <= best) {
+				best = d;
+				hit = a.id;
+			}
+		}
+		if (hit !== undefined) return needEnergy(2, { ok: true, msg: "", hitAnimalId: hit });
+	}
+
+	const other = playerAt(inst, x, y, userId);
+	if (other) return { ok: true, msg: `👋 You wave at ${other.name}.` };
+	if (terrain === T.portal)
+		return world ? { ok: true, msg: "🌀 Heading home.", travel: "land" } : { ok: true, msg: "🌀 Off to the valley.", travel: "world" };
+	if (terrain === T.door) return { ok: true, msg: "🏪 Welcome to the General Store!", menu: "shop" };
+
+	// Public fields: anyone can harvest; the field regrows after a few minutes
+	if (world && terrain === T.field) {
+		const crop = CROPS[fieldCrop(x, y) ?? ""];
+		if (crop) {
+			if (tile?.regrowAt !== undefined && now < tile.regrowAt) return { ok: false, msg: "This is still growing." };
+			return {
+				ok: true,
+				msg: `🧺 Harvested ${crop.yieldQty} ${ITEMS[crop.yieldItem]?.name}!`,
+				give: { [crop.yieldItem]: crop.yieldQty },
+				changedTiles: [key],
+				apply: () => inst.tiles.set(key, { tilled: true, wateredDays: [], regrowAt: now + CROP_REGROW_MS }),
+			};
+		}
+	}
+
 	// Harvest works with anything in hand
-	const stage = tile ? cropStage(tile, day) : null;
+	const stage = !world && tile ? cropStage(tile, day) : null;
 	if (stage?.ready) {
-		if (!ownsPlot) return { ok: false, msg: "This crop belongs to someone else." };
+		if (!owner) return { ok: false, msg: NOT_YOURS };
 		return {
 			ok: true,
 			msg: `🧺 Harvested ${stage.crop.yieldQty} ${ITEMS[stage.crop.yieldItem]?.name}!`,
 			give: { [stage.crop.yieldItem]: stage.crop.yieldQty },
 			changedTiles: [key],
-			apply: () => world.tiles.set(key, { tilled: true, wateredDays: [] }),
+			apply: () => inst.tiles.set(key, { tilled: true, wateredDays: [] }),
 		};
 	}
 
-	if (tool === "hoe" && terrain === T.farmland && !tile?.tilled) {
-		if (!ownsPlot) return { ok: false, msg: plot ? "That plot belongs to someone else." : "You can only till your plot." };
+	if (tool === "hoe" && terrain === T.grass && !tile?.tilled) {
+		if (world) return { ok: false, msg: READ_ONLY };
+		if (!owner) return { ok: false, msg: NOT_YOURS };
 		return needEnergy(2, {
 			ok: true,
 			msg: "You till the soil.",
 			changedTiles: [key],
-			apply: () => world.tiles.set(key, { tilled: true, wateredDays: [] }),
+			// Keeps clearedDay; a tilled tile counts as cleared for good
+			apply: () => inst.tiles.set(key, { ...tile, tilled: true, wateredDays: [] }),
 		});
 	}
 	if (tool === "watering_can") {
 		if (terrain === T.water) return { ok: true, msg: "💧 You refill your watering can." };
+		if (world) return tile?.tilled ? { ok: false, msg: READ_ONLY } : { ok: false, msg: "Nothing to do here." };
 		if (tile?.tilled) {
+			if (!owner) return { ok: false, msg: NOT_YOURS };
 			if (tile.wateredDays.includes(day)) return { ok: false, msg: "Already watered today." };
 			return needEnergy(1, {
 				ok: true,
@@ -239,9 +358,11 @@ export function use(world: TWorldState, userId: string, now: number, inventory: 
 		}
 	}
 	if (item?.category === "seed" && item.cropId) {
+		if (world)
+			return terrain === T.grass || tile?.tilled ? { ok: false, msg: READ_ONLY } : { ok: false, msg: "Nothing to do here." };
 		if (!tile?.tilled) return { ok: false, msg: "Seeds need tilled soil." };
 		if (tile.cropId) return { ok: false, msg: "Something is already growing here." };
-		if (!ownsPlot) return { ok: false, msg: "You can only plant on your plot." };
+		if (!owner) return { ok: false, msg: NOT_YOURS };
 		if ((inventory[tool] ?? 0) < 1) return { ok: false, msg: `You have no ${item.name}.` };
 		const cropId = item.cropId;
 		return {
@@ -256,18 +377,21 @@ export function use(world: TWorldState, userId: string, now: number, inventory: 
 			},
 		};
 	}
+	// Trees and rocks: day-based respawn on private land, minutes in a public lobby
+	const clear = (regrowMs: number) => () =>
+		inst.tiles.set(key, world ? { wateredDays: [], regrowAt: now + regrowMs } : { wateredDays: [], clearedDay: day });
 	if (tool === "axe" && terrain === T.tree) {
-		if (x <= 0 || y <= 0 || x >= MAP_W - 1 || y >= MAP_H - 1) return { ok: false, msg: "This old tree is too sturdy." };
+		if (!world && !owner) return { ok: false, msg: NOT_YOURS };
 		return needEnergy(4, {
 			ok: true,
 			msg: "🪓 Timber! +3 Wood",
 			give: { wood: 3 },
 			changedTiles: [key],
-			apply: () => world.tiles.set(key, { wateredDays: [], clearedDay: day }),
+			apply: clear(TREE_REGROW_MS),
 		});
 	}
 	if (tool === "pickaxe" && terrain === T.rock) {
-		if (x >= MAP_W - 1) return { ok: false, msg: "This boulder will not budge." };
+		if (!world && !owner) return { ok: false, msg: NOT_YOURS };
 		const ore = oreRoll(x, y, day);
 		const qty = ore === "stone" ? 2 : 1;
 		return needEnergy(4, {
@@ -275,16 +399,21 @@ export function use(world: TWorldState, userId: string, now: number, inventory: 
 			msg: `⚒️ +${qty} ${ITEMS[ore]?.name}`,
 			give: { [ore]: qty },
 			changedTiles: [key],
-			apply: () => world.tiles.set(key, { wateredDays: [], clearedDay: day }),
+			apply: clear(ROCK_REGROW_MS),
 		});
 	}
 	return { ok: false, msg: "Nothing to do here." };
 }
 
-export function sleep(world: TWorldState, userId: string, now: number): TActionResult {
-	const p = world.players.get(userId);
-	if (!p) return { ok: false, msg: "You are not in this world." };
-	const { minuteOfDay } = clock(world.epoch, now);
+/** Restores energy when facing the door of your own house after 18:00 */
+export function sleep(inst: TInstance, userId: string, now: number): TActionResult {
+	const p = inst.players.get(userId);
+	if (!p) return { ok: false, msg: "You are not here." };
+	const door = facedTile(p);
+	if (inst.kind !== "land" || door.x !== HOUSE_DOOR.x || door.y !== HOUSE_DOOR.y)
+		return { ok: false, msg: "Face your house door to sleep." };
+	if (inst.ownerId !== userId) return { ok: false, msg: "You can only sleep in your own house." };
+	const { minuteOfDay } = clock(inst.epoch, now);
 	if (minuteOfDay < 18 * 60) return { ok: false, msg: "It's too early to sleep. Come back after 18:00." };
 	return {
 		ok: true,

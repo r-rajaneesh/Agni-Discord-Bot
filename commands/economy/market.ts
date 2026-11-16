@@ -2,6 +2,7 @@ import * as Discord from "discord.js";
 import CommandBuilder from "@Builders/CommandBuilder";
 import { ITEMS } from "../../game/data/items";
 import { TRADE_FEE } from "../../game/market";
+import { renderChart } from "../../managers/chart";
 
 const TRADEABLE = Object.values(ITEMS).filter((i) => i.tradeable);
 const itemChoices = TRADEABLE.map((i) => ({ name: i.name, value: i.id })).slice(0, 25);
@@ -134,7 +135,7 @@ export default new CommandBuilder({
 			case "chart": {
 				if (!item) return reply("Market", "Unknown item.", client.config.colours.red);
 				const history = await eco.priceHistory(item.id, 48);
-				const png = await client.render.renderChart(
+				const png = await renderChart(
 					`${item.name}, hourly price`,
 					history.map((h) => ({ hour: h.hour, close: h.close ?? 0, high: h.high ?? 0, low: h.low ?? 0 })),
 				);

@@ -21,9 +21,8 @@ export type TTerrain = (typeof T)[keyof typeof T];
 
 export const MAP_W = 48;
 export const MAP_H = 32;
-export const SPAWN = { x: 23, y: 14 };
 
-export interface TPlot {
+interface TPlot {
 	id: number;
 	x: number;
 	y: number;
@@ -33,7 +32,7 @@ export interface TPlot {
 
 const PLOT_W = 7;
 const PLOT_H = 5;
-export const PLOTS: TPlot[] = [3, 13, 27, 34].flatMap((x, col) =>
+const PLOTS: TPlot[] = [3, 13, 27, 34].flatMap((x, col) =>
 	[18, 24].map((y, row) => ({ id: col * 2 + row, x, y, w: PLOT_W, h: PLOT_H })),
 );
 
@@ -51,8 +50,9 @@ export function prng(seed: number) {
 	};
 }
 
-// plotTile fills the old plot rects; the open world stamps the town with them as grass
-function build(plotTile: number): Uint8Array {
+// The town layout for the open world (game/world.ts). The old farm plots stay as grass so the
+// random scatter around them keeps its old layout.
+function build(): Uint8Array {
 	const m = new Uint8Array(MAP_W * MAP_H).fill(T.grass);
 	const set = (x: number, y: number, t: number) => {
 		if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) m[y * MAP_W + x] = t;
@@ -75,7 +75,7 @@ function build(plotTile: number): Uint8Array {
 	set(23, 5, T.door);
 	set(24, 5, T.door);
 	// Farm plots
-	PLOTS.forEach((p) => rect(p.x, p.y, p.w, p.h, plotTile));
+	PLOTS.forEach((p) => rect(p.x, p.y, p.w, p.h, T.grass));
 
 	const rand = prng(0xa9e1);
 	const isFree = (x: number, y: number) => m[y * MAP_W + x] === T.grass;
@@ -108,11 +108,4 @@ function build(plotTile: number): Uint8Array {
 	return m;
 }
 
-export const BASE_MAP = build(T.farmland);
-// The town layout without plots, for the open world (game/world.ts)
-export const TOWN_MAP = build(T.grass);
-export const baseTerrain = (x: number, y: number): number =>
-	x < 0 || y < 0 || x >= MAP_W || y >= MAP_H ? T.tree : (BASE_MAP[y * MAP_W + x] as number);
-
-export const plotAt = (x: number, y: number) =>
-	PLOTS.find((p) => x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h);
+export const TOWN_MAP = build();

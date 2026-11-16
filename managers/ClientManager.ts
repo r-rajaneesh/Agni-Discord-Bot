@@ -7,9 +7,7 @@ import Localemanager from "./LocaleManager.ts";
 import LogManager from "./LogManager.ts";
 import mongoose from "mongoose";
 import EconomyManager from "./EconomyManager.ts";
-import GameManager from "./GameManager.ts";
 import PaymentManager from "./PaymentManager.ts";
-import RenderManager from "./RenderManager.ts";
 
 class ClientManager extends Discord.Client {
 	public ClientOptions: Discord.ClientOptions;
@@ -23,8 +21,6 @@ class ClientManager extends Discord.Client {
 	public locale: Localemanager;
 	public REST: Discord.REST;
 	public economy: EconomyManager;
-	public render: RenderManager;
-	public game: GameManager;
 	public payments: PaymentManager;
 
 	constructor(
@@ -73,8 +69,6 @@ class ClientManager extends Discord.Client {
 		this.config = ClientConfig;
 		this.locale = new Localemanager(this);
 		this.economy = new EconomyManager({ warn: (msg) => this.log.warn(msg) });
-		this.render = new RenderManager();
-		this.game = new GameManager(this);
 		this.payments = new PaymentManager(this);
 		this.REST = new Discord.REST({ version: "10" }).setToken(process.env.BOT_TOKEN as string);
 		// Collections

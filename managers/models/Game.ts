@@ -1,28 +1,18 @@
 import mongoose from "mongoose";
 
-const GameWorldSchema = new mongoose.Schema({
-	guildId: { type: String, required: true, unique: true },
+const LandSchema = new mongoose.Schema({
+	landId: { type: String, required: true, unique: true },
+	ownerId: { type: String, required: true },
+	slot: { type: Number, required: true, default: 0 },
+	seed: { type: Number, required: true },
 	epoch: { type: Number, required: true },
-	plotOwners: { type: [mongoose.SchemaTypes.Mixed], default: [] },
+	unlocked: { type: [String], default: [] },
+	createdAt: { type: Date, default: Date.now },
 });
+LandSchema.index({ ownerId: 1, slot: 1 }, { unique: true });
 
-const GamePlayerSchema = new mongoose.Schema({
-	guildId: { type: String, required: true },
-	userId: { type: String, required: true },
-	name: String,
-	x: Number,
-	y: Number,
-	facing: String,
-	energy: Number,
-	lastEnergyAt: Number,
-	equipped: String,
-	plotId: { type: Number, default: null },
-	colour: String,
-});
-GamePlayerSchema.index({ guildId: 1, userId: 1 }, { unique: true });
-
-const GameTileSchema = new mongoose.Schema({
-	guildId: { type: String, required: true },
+const LandTileSchema = new mongoose.Schema({
+	landId: { type: String, required: true },
 	x: { type: Number, required: true },
 	y: { type: Number, required: true },
 	tilled: Boolean,
@@ -31,8 +21,25 @@ const GameTileSchema = new mongoose.Schema({
 	wateredDays: { type: [Number], default: [] },
 	clearedDay: Number,
 });
-GameTileSchema.index({ guildId: 1, x: 1, y: 1 }, { unique: true });
+LandTileSchema.index({ landId: 1, x: 1, y: 1 }, { unique: true });
 
-export const GameWorld = mongoose.model("game_world", GameWorldSchema);
-export const GamePlayer = mongoose.model("game_player", GamePlayerSchema);
-export const GameTile = mongoose.model("game_tile", GameTileSchema);
+const PlayerStateSchema = new mongoose.Schema({
+	userId: { type: String, required: true, unique: true },
+	name: String,
+	colour: String,
+	energy: Number,
+	lastEnergyAt: Number,
+	equipped: String,
+	location: {
+		instanceKind: { type: String, enum: ["land", "world"], required: true },
+		landId: String,
+		lobby: Number,
+		x: Number,
+		y: Number,
+		facing: String,
+	},
+});
+
+export const Land = mongoose.model("land", LandSchema);
+export const LandTile = mongoose.model("land_tile", LandTileSchema);
+export const PlayerState = mongoose.model("player_state", PlayerStateSchema);

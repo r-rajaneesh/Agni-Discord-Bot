@@ -1,0 +1,584 @@
+import type { ServerWebSocket } from "bun";
+import { chunkOf, dropLand } from "../game/chunks";
+import { ITEMS, STARTER_COINS, STARTER_KIT } from "../game/data/items";
+import {
+	MAX_ENERGY,
+	TICK_MS,
+	currentEnergy,
+	enter,
+	simulate,
+	type TDir,
+	type TInstance,
+	type TPlayerState,
+} from "../game/engine";
+import {
+	PROTOCOL_VERSION,
+	parseClientMessage,
+	type TClientMsg,
+	type TPlayerView,
+	type TServerMsg,
+	type TSnapshot,
+} from "../game/protocol";
+import type { TSocketData } from "../server";
+import type ActivityAuth from "./ActivityAuth";
+import type EconomyManager from "./EconomyManager";
+import { landIdOf, type TLocation, type TStoredPlayer } from "./InstanceStore";
+import type InstanceStore from "./InstanceStore";
+import type PaymentManager from "./PaymentManager";
+import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
+import Lobbies, { LOBBY_CAP } from "./game/lobbies";
+
+export { AOI_CHUNKS } from "./game/aoi";
+export { LOBBY_CAP };
+/** An input older than this stops the player */
+export const INPUT_STALE_MS = 250;
+const FLUSH_MS = 5000;
+const LAND_UNLOAD_MS = 5 * 60_000;
+const LOBBY_CLOSE_MS = 60_000;
+const MAX_INVALID = 20;
+const PALETTE = ["#e74c3c", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#f1c40f", "#e84393", "#2ecc71"];
+const PRICE_ITEMS = Object.values(ITEMS)
+	.filter((i) => i.tradeable)
+	.map((i) => i.id);
+
+type TSocket = Pick<ServerWebSocket<TSocketData>, "data" | "send" | "close">;
+type TLog = { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void };
+type TPrices = TSnapshot["prices"];
+
+/** One loaded instance */
+interface TRuntime {
+	inst: TInstance;
+	sessions: Set<TSession>;
+	/** Mutation queue: one async change at a time per instance */
+	queue: Promise<unknown>;
+	busy: number;
+	/** When the last player left; null while occupied */
+	emptyAt: number | null;
+	changed: TTileIndex;
+}
+
+interface TSession {
+	ws: TSocket;
+	userId: string;
+	rt: TRuntime;
+	player: TPlayerState;
+	input: { dx: -1 | 0 | 1; dy: -1 | 0 | 1; at: number } | null;
+	seq: number;
+	dirty: boolean;
+	chunk: TChunk;
+	/** Other sessions in this one's AOI; always symmetric */
+	visible: Set<TSession>;
+	/** Guild of the launch, when the user is a member; picks the home lobby */
+	home: { id: string; name: string } | null;
+	/** Last position in the open world, used when arriving from private land */
+	lastWorld: { x: number; y: number; facing: TDir } | null;
+}
+
+interface TConn {
+	ws: TSocket;
+	state: "new" | "pending" | "ready" | "closed";
+	invalid: number;
+	session?: TSession;
+}
+
+export interface TGameServerDeps {
+	store: InstanceStore;
+	auth: Pick<ActivityAuth, "verify" | "guild">;
+	eco: EconomyManager;
+	payments: Pick<PaymentManager, "hasPass" | "createRazorpayLink" | "razorpayEnabled">;
+	dm: (userId: string, content: string) => Promise<void>;
+	log: TLog;
+	now?: () => number;
+	/** False in tests, which call tick() themselves */
+	autoTick?: boolean;
+}
+
+const colourOf = (userId: string) => {
+	let h = 0;
+	for (const ch of userId) h = (h * 31 + ch.charCodeAt(0)) | 0;
+	return PALETTE[Math.abs(h) % PALETTE.length] as string;
+};
+
+/** Real-time game: sessions, instances (private lands and public lobbies), the movement tick and AOI broadcast. */
+export default class GameServer {
+	private deps: TGameServerDeps;
+	private now: () => number;
+	private timer: ReturnType<typeof setInterval> | null = null;
+	private worldEpoch: number;
+	private lastFlush: number;
+	private conns = new Map<string, TConn>();
+	private sessions = new Map<string, TSession>();
+	private instances = new Map<string, TRuntime>();
+	/** Owner id → land being loaded or loaded */
+	private lands = new Map<string, Promise<TRuntime>>();
+	private lobbies: Lobbies<TRuntime>;
+	/** Hellos for one user run one at a time */
+	private userLocks = new Map<string, Promise<unknown>>();
+	/** Player saves run in order, so an older position never overwrites a newer one */
+	private saves: Promise<void> = Promise.resolve();
+
+	constructor(deps: TGameServerDeps) {
+		this.deps = deps;
+		this.now = deps.now ?? Date.now;
+		this.worldEpoch = this.now();
+		this.lastFlush = this.now();
+		this.lobbies = new Lobbies((inst) => this.runtime(inst), this.worldEpoch);
+		if (deps.autoTick !== false) this.timer = setInterval(() => this.tick(), TICK_MS);
+	}
+
+	/** A loaded instance by id (tests and later tasks) */
+	instance(id: string): TInstance | undefined {
+		return this.instances.get(id)?.inst;
+	}
+
+	// ---------- sockets ----------
+
+	open(ws: TSocket): void {
+		this.conns.set(ws.data.connId, { ws, state: "new", invalid: 0 });
+	}
+
+	close(ws: TSocket): void {
+		const conn = this.conns.get(ws.data.connId);
+		if (!conn) return;
+		this.conns.delete(ws.data.connId);
+		conn.state = "closed";
+		if (conn.session) this.endSession(conn.session);
+	}
+
+	async message(ws: TSocket, raw: string | Buffer): Promise<void> {
+		const conn = this.conns.get(ws.data.connId);
+		if (!conn || conn.state === "closed") return;
+		try {
+			const m = parseClientMessage(raw);
+			if (conn.state !== "ready") {
+				// Until hello is verified a socket may send nothing else
+				if (conn.state === "new" && m?.t === "hello") {
+					conn.state = "pending";
+					return await this.hello(conn, m);
+				}
+				if (conn.state === "pending") return this.drop(conn, 1008, "wait for welcome", "wait for welcome");
+				return this.drop(conn, 1008, "hello first");
+			}
+			const s = conn.session!;
+			if (!m || m.t === "hello") {
+				if (++conn.invalid >= MAX_INVALID) this.drop(conn, 1008, "too many invalid messages");
+				return;
+			}
+			await this.handle(s, m);
+		} catch (e) {
+			this.deps.log.error("[GAME] message failed", e);
+		}
+	}
+
+	private handle(s: TSession, m: Exclude<TClientMsg, { t: "hello" }>): Promise<void> | void {
+		switch (m.t) {
+			case "input":
+				if (m.seq <= s.seq) return;
+				s.seq = m.seq;
+				s.input = { dx: m.dx, dy: m.dy, at: this.now() };
+				return;
+			case "lobbies":
+				return this.send(s.ws, this.lobbies.list(s.rt.inst.lobby?.n ?? null));
+			case "switchLobby":
+				return this.switchLobby(s, m.lobby);
+			default:
+				// Actions arrive in a later task
+				return this.toast(s, "Not available yet.", false);
+		}
+	}
+
+	private send(ws: TSocket, msg: TServerMsg) {
+		try {
+			ws.send(JSON.stringify(msg));
+		} catch {
+			// socket already gone
+		}
+	}
+
+	private toast(s: TSession, msg: string, ok: boolean) {
+		this.send(s.ws, { t: "toast", msg, ok });
+	}
+
+	/** Closes a socket we no longer serve, after an optional kicked message */
+	private drop(conn: TConn, code: number, reason: string, kicked?: string) {
+		if (conn.state === "closed") return;
+		if (kicked) this.send(conn.ws, { t: "kicked", reason: kicked });
+		this.conns.delete(conn.ws.data.connId);
+		conn.state = "closed";
+		if (conn.session) this.endSession(conn.session);
+		try {
+			conn.ws.close(code, reason);
+		} catch {
+			// already closed
+		}
+	}
+
+	// ---------- hello ----------
+
+	private async hello(conn: TConn, m: Extract<TClientMsg, { t: "hello" }>) {
+		try {
+			if (m.v !== PROTOCOL_VERSION) return this.drop(conn, 4000, "outdated client", "outdated client");
+			const user = await this.deps.auth.verify(m.token);
+			if (!user) return this.drop(conn, 4001, "unauthorized", "unauthorized");
+			const home = m.guildId ? await this.deps.auth.guild(m.token, m.guildId) : null;
+			await this.forUser(user.id, () => this.join(conn, user, home));
+		} catch (e) {
+			this.deps.log.error("[GAME] hello failed", e);
+			this.drop(conn, 1011, "server error", "server error");
+		}
+	}
+
+	private forUser<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+		const prev = this.userLocks.get(userId) ?? Promise.resolve();
+		const run = prev.then(fn);
+		const tail = run.catch(() => {});
+		this.userLocks.set(userId, tail);
+		void tail.then(() => {
+			if (this.userLocks.get(userId) === tail) this.userLocks.delete(userId);
+		});
+		return run;
+	}
+
+	private async join(conn: TConn, user: { id: string; name: string }, home: { id: string; name: string } | null) {
+		const userId = user.id;
+		// A live session is fresher than the database
+		const old = this.sessions.get(userId);
+		// Saves of a session that just closed land before the reload
+		if (!old) await this.saves;
+		const stored = old ? null : await this.deps.store.loadPlayer(userId);
+		if (!old && !stored) {
+			const r = await this.deps.eco.transact([{ userId, coins: STARTER_COINS, items: STARTER_KIT }], {
+				reason: "starter",
+				idempotencyKey: `starter:${userId}`,
+			});
+			if (!r.ok) this.deps.log.warn(`[GAME] starter grant failed for ${userId}: ${r.message}`);
+		}
+		const premium = await this.deps.payments.hasPass(userId).catch(() => false);
+		const prices = await this.prices();
+		const kind = old ? old.rt.inst.kind : (stored?.location.instanceKind ?? "land");
+		// Last await: nothing can unload the land before the player is placed
+		const rt = kind === "land" ? await this.land(userId) : null;
+		if (conn.state === "closed") return;
+
+		// The old session may have moved, switched instance or closed during the awaits
+		const current = this.sessions.get(userId);
+		const src = current ?? old;
+		const prev = src?.player ?? stored;
+		const base: Omit<TPlayerState, "x" | "y" | "facing"> = {
+			userId,
+			name: user.name,
+			energy: prev?.energy ?? MAX_ENERGY,
+			lastEnergyAt: prev?.lastEnergyAt ?? this.now(),
+			equipped: prev?.equipped ?? "hoe",
+			colour: prev?.colour ?? colourOf(userId),
+			premium,
+		};
+		let lastWorld = src?.lastWorld ?? null;
+		if (stored?.location.instanceKind === "world") lastWorld = { x: stored.x, y: stored.y, facing: stored.facing };
+		// Only a position on the same kind of instance is reused
+		const at = prev && (src ? src.rt.inst.kind : kind) === kind ? { x: prev.x, y: prev.y, facing: prev.facing } : undefined;
+		// Leaves first, so the old session's slot doesn't count against its lobby
+		if (current) this.drop(this.connOf(current), 4002, "opened elsewhere", "opened elsewhere");
+
+		// The current or saved lobby while it is open and has room, else the placement rules
+		const n = src ? src.rt.inst.lobby?.n : stored?.location.lobby;
+		const kept = n === undefined ? undefined : this.lobbies.get(n);
+		const dest = rt ?? (kept && kept.inst.players.size < LOBBY_CAP ? kept : this.lobbies.pick(home));
+		const s: TSession = {
+			ws: conn.ws,
+			userId,
+			rt: dest,
+			player: undefined as unknown as TPlayerState,
+			input: null,
+			seq: 0,
+			dirty: true,
+			chunk: { cx: 0, cy: 0 },
+			visible: new Set(),
+			home,
+			lastWorld,
+		};
+		conn.ws.data.userId = userId;
+		conn.state = "ready";
+		conn.session = s;
+		this.sessions.set(userId, s);
+		this.place(s, dest, base, at, prices);
+		await this.pushWallet(userId);
+	}
+
+	// A live session always has its connection: drop() and close() end the session when they remove it
+	private connOf(s: TSession): TConn {
+		const conn = this.conns.get(s.ws.data.connId);
+		if (!conn) throw new Error(`session without connection: ${s.userId}`);
+		return conn;
+	}
+
+	private async prices(): Promise<TPrices> {
+		const all = await this.deps.eco.npcPrices(PRICE_ITEMS);
+		return Object.fromEntries(Object.entries(all).map(([id, p]) => [id, { buy: p.buy, sell: p.sell }]));
+	}
+
+	// ---------- instances ----------
+
+	private runtime(inst: TInstance): TRuntime {
+		const rt: TRuntime = { inst, sessions: new Set(), queue: Promise.resolve(), busy: 0, emptyAt: this.now(), changed: new Map() };
+		for (const key of inst.tiles.keys()) indexTile(rt.changed, inst.tiles, key);
+		this.instances.set(inst.id, rt);
+		return rt;
+	}
+
+	/** Runs one change on an instance after the ones before it; the instance stays loaded meanwhile */
+	private run<T>(rt: TRuntime, fn: () => T | Promise<T>): Promise<T> {
+		rt.busy++;
+		const result = rt.queue.then(fn);
+		rt.queue = result.catch(() => {}).finally(() => rt.busy--);
+		return result;
+	}
+
+	private land(ownerId: string): Promise<TRuntime> {
+		let p = this.lands.get(ownerId);
+		if (!p) {
+			p = this.deps.store.getOrCreateLand(ownerId).then((inst) => this.runtime(inst));
+			this.lands.set(ownerId, p);
+			p.catch(() => this.lands.delete(ownerId));
+		}
+		return p;
+	}
+
+	private async switchLobby(s: TSession, n: number) {
+		const check = () => {
+			const rt = this.lobbies.get(n);
+			if (!rt) return `No lobby #${n}.`;
+			if (rt === s.rt) return `You're already in lobby #${n}.`;
+			if (rt.inst.players.size >= LOBBY_CAP) return `Lobby #${n} is full.`;
+			return rt;
+		};
+		const first = check();
+		if (typeof first === "string") return this.toast(s, first, false);
+		try {
+			const prices = await this.prices();
+			await this.run(first, () => {
+				if (this.sessions.get(s.userId) !== s) return;
+				const rt = check();
+				if (typeof rt === "string") return this.toast(s, rt, false);
+				const p = s.player;
+				const at = s.rt.inst.kind === "world" ? { x: p.x, y: p.y, facing: p.facing } : (s.lastWorld ?? undefined);
+				const { x: _x, y: _y, facing: _f, ...base } = p;
+				this.leave(s);
+				this.place(s, rt, base, at, prices);
+				s.dirty = true;
+			});
+		} catch (e) {
+			this.deps.log.error("[GAME] switchLobby failed", e);
+			this.toast(s, "Couldn't switch lobby. Try again.", false);
+		}
+	}
+
+	/** Puts a session's player into an instance and sends the snapshot */
+	private place(
+		s: TSession,
+		rt: TRuntime,
+		base: Omit<TPlayerState, "x" | "y" | "facing">,
+		at: { x: number; y: number; facing: TDir } | undefined,
+		prices: TPrices,
+	) {
+		s.player = enter(rt.inst, base, at);
+		s.rt = rt;
+		s.input = null;
+		rt.sessions.add(s);
+		rt.emptyAt = null;
+		s.chunk = chunkOf(s.player.x, s.player.y);
+		const view = this.view(s);
+		for (const o of rt.sessions) {
+			if (o === s || !near(o.chunk, s.chunk)) continue;
+			s.visible.add(o);
+			o.visible.add(s);
+			this.send(o.ws, { t: "player", p: view });
+		}
+		const { inst } = rt;
+		const snapshot: TSnapshot = {
+			instance: {
+				id: inst.id,
+				kind: inst.kind,
+				seed: inst.seed,
+				ownerId: inst.ownerId,
+				epoch: inst.epoch,
+				unlocked: [...inst.unlocked],
+				lobby: inst.lobby ? { n: inst.lobby.n, label: inst.lobby.label } : null,
+			},
+			tiles: tilesIn(rt.changed, inst.tiles, (c) => near(c, s.chunk)),
+			players: [...s.visible].map((o) => this.view(o)),
+			you: view,
+			prices,
+		};
+		this.send(s.ws, { t: "welcome", userId: s.userId, snapshot });
+	}
+
+	/** Takes a session's player out of its instance */
+	private leave(s: TSession) {
+		const { rt, player: p } = s;
+		if (rt.inst.kind === "world") s.lastWorld = { x: p.x, y: p.y, facing: p.facing };
+		rt.inst.players.delete(s.userId);
+		rt.sessions.delete(s);
+		for (const o of s.visible) {
+			o.visible.delete(s);
+			this.send(o.ws, { t: "left", userId: s.userId });
+		}
+		s.visible.clear();
+		if (rt.inst.players.size === 0) rt.emptyAt = this.now();
+	}
+
+	private endSession(s: TSession) {
+		if (this.sessions.get(s.userId) !== s) return;
+		this.sessions.delete(s.userId);
+		const saved = this.stored(s);
+		this.leave(s);
+		this.save([saved]);
+	}
+
+	// ---------- tiles and AOI ----------
+
+	/** Records changed tiles and sends them to the players whose AOI covers them (used by actions) */
+	tilesChanged(inst: TInstance, keys: string[]): void {
+		const rt = this.instances.get(inst.id);
+		if (!rt) return;
+		for (const key of keys) indexTile(rt.changed, inst.tiles, key);
+		for (const s of rt.sessions) {
+			const tiles = tilesNear(keys, inst.tiles, s.chunk);
+			if (tiles.length) this.send(s.ws, { t: "tiles", tiles });
+		}
+	}
+
+	private view(s: TSession): TPlayerView {
+		const p = s.player;
+		return { userId: p.userId, name: p.name, x: p.x, y: p.y, facing: p.facing, equipped: p.equipped, colour: p.colour, premium: !!p.premium };
+	}
+
+	// ---------- tick ----------
+
+	tick(): void {
+		try {
+			const now = this.now();
+			const movers: TSession[] = [];
+			for (const s of this.sessions.values()) {
+				const i = s.input;
+				if (!i || now - i.at >= INPUT_STALE_MS) continue;
+				const p = s.player;
+				const { x, y, facing } = p;
+				simulate(s.rt.inst, s.userId, i.dx, i.dy, TICK_MS, now);
+				this.send(s.ws, { t: "you", x: p.x, y: p.y, facing: p.facing, ack: s.seq });
+				if (p.x === x && p.y === y && p.facing === facing) continue;
+				s.dirty = true;
+				movers.push(s);
+			}
+			for (const s of movers) this.moved(s);
+			this.sweep(now);
+			if (now - this.lastFlush >= FLUSH_MS) this.flush();
+		} catch (e) {
+			this.deps.log.error("[GAME] tick failed", e);
+		}
+	}
+
+	// Sends the move to players in AOI, and updates who sees whom and which tiles are known
+	private moved(s: TSession) {
+		const c = chunkOf(s.player.x, s.player.y);
+		if (c.cx !== s.chunk.cx || c.cy !== s.chunk.cy) {
+			const prev = s.chunk;
+			s.chunk = c;
+			const tiles = tilesIn(s.rt.changed, s.rt.inst.tiles, (k) => near(k, c) && !near(k, prev));
+			if (tiles.length) this.send(s.ws, { t: "tiles", tiles });
+		}
+		const view = this.view(s);
+		for (const o of s.rt.sessions) {
+			if (o === s) continue;
+			if (near(o.chunk, s.chunk)) {
+				this.send(o.ws, { t: "player", p: view });
+				if (!s.visible.has(o)) {
+					s.visible.add(o);
+					o.visible.add(s);
+					this.send(s.ws, { t: "player", p: this.view(o) });
+				}
+			} else if (s.visible.has(o)) {
+				s.visible.delete(o);
+				o.visible.delete(s);
+				this.send(o.ws, { t: "left", userId: s.userId });
+				this.send(s.ws, { t: "left", userId: o.userId });
+			}
+		}
+	}
+
+	// Unloads empty lands after 5 minutes and closes empty lobbies (except #1) after 60 s
+	private sweep(now: number) {
+		for (const rt of this.instances.values()) {
+			const { inst } = rt;
+			if (inst.players.size > 0 || rt.emptyAt === null || rt.busy > 0) continue;
+			if (inst.kind === "land" && now - rt.emptyAt >= LAND_UNLOAD_MS) {
+				this.instances.delete(inst.id);
+				this.lands.delete(inst.ownerId!);
+				dropLand(inst.seed);
+			} else if (inst.lobby && inst.lobby.n !== 1 && now - rt.emptyAt >= LOBBY_CLOSE_MS) {
+				this.instances.delete(inst.id);
+				this.lobbies.close(inst.lobby.n);
+			}
+		}
+	}
+
+	// ---------- persistence ----------
+
+	private stored(s: TSession): TStoredPlayer {
+		const p = s.player;
+		const { inst } = s.rt;
+		const location: TLocation =
+			inst.kind === "land"
+				? { instanceKind: "land", landId: landIdOf(inst), x: p.x, y: p.y, facing: p.facing }
+				: { instanceKind: "world", lobby: inst.lobby!.n, x: p.x, y: p.y, facing: p.facing };
+		return { ...p, location };
+	}
+
+	private save(players: TStoredPlayer[], retry: TSession[] = []) {
+		if (players.length === 0) return;
+		this.saves = this.saves
+			.then(() => this.deps.store.savePlayers(players))
+			.catch((e) => {
+				this.deps.log.error("[GAME] saving players failed", e);
+				for (const s of retry) s.dirty = true;
+			});
+	}
+
+	private flush() {
+		this.lastFlush = this.now();
+		const dirty = [...this.sessions.values()].filter((s) => s.dirty);
+		for (const s of dirty) s.dirty = false;
+		this.save(
+			dirty.map((s) => this.stored(s)),
+			dirty,
+		);
+	}
+
+	/** Sends the player's coins, gems, inventory and energy */
+	async pushWallet(userId: string): Promise<void> {
+		try {
+			const [w, inventory] = await Promise.all([this.deps.eco.wallet(userId), this.deps.eco.inventory(userId)]);
+			const s = this.sessions.get(userId);
+			if (!s) return;
+			this.send(s.ws, { t: "wallet", coins: w.coins, gems: w.gems, inventory, energy: currentEnergy(s.player, this.now()) });
+		} catch (e) {
+			this.deps.log.error("[GAME] pushWallet failed", e);
+		}
+	}
+
+	/** Saves every player and closes every socket */
+	async shutdown(): Promise<void> {
+		if (this.timer) clearInterval(this.timer);
+		this.timer = null;
+		this.save([...this.sessions.values()].map((s) => this.stored(s)));
+		this.sessions.clear();
+		for (const conn of [...this.conns.values()]) {
+			conn.session = undefined;
+			this.drop(conn, 1012, "server restarting", "server restarting");
+		}
+		for (const { inst } of this.instances.values()) if (inst.kind === "land") dropLand(inst.seed);
+		this.instances.clear();
+		this.lands.clear();
+		await this.saves;
+	}
+}

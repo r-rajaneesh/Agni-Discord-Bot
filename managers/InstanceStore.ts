@@ -5,10 +5,10 @@ import type EconomyManager from "./EconomyManager";
 import { Land, LandTile, PlayerState } from "./models/Game";
 
 export type TLocation = { instanceKind: "land" | "world"; landId?: string; lobby?: number; x: number; y: number; facing: TDir };
-type TStoredPlayer = TPlayerState & { location: TLocation };
+export type TStoredPlayer = TPlayerState & { location: TLocation };
 
-const landInstanceId = (landId: string) => `land:${landId}`;
-function landIdOf(inst: TInstance): string {
+export const landInstanceId = (landId: string) => `land:${landId}`;
+export function landIdOf(inst: TInstance): string {
 	if (inst.kind !== "land") throw new Error(`not a land instance: ${inst.id}`);
 	return inst.id.slice("land:".length);
 }

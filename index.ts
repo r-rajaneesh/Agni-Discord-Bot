@@ -12,9 +12,8 @@ let stopping = false;
 async function shutdown(signal: string) {
 	if (stopping) return;
 	stopping = true;
-	client.log.info(`Received ${signal}, saving game state…`);
+	client.log.info(`Received ${signal}, shutting down…`);
 	server?.close();
-	await client.game.shutdown().catch((e) => client.log.error(e));
 	await client.destroy();
 	process.exit(0);
 }

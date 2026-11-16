@@ -13,9 +13,10 @@ export default new CommandBuilder({
 		.setDescription("Agni Valley, a multiplayer farming game")
 		.setContexts(Discord.InteractionContextType.Guild)
 		.setIntegrationTypes(Discord.ApplicationIntegrationType.GuildInstall)
-		.addSubcommand((play) => play.setName("play").setDescription("Open your farm (only you can see the controls)")),
+		.addSubcommand((play) => play.setName("play").setDescription("Open your farm")),
 	execute: async ({ client, interaction }) => {
 		if (!interaction?.isChatInputCommand() || !interaction.guildId) return;
-		if (interaction.options.getSubcommand() === "play") await client.game.play(interaction);
+		if (interaction.options.getSubcommand() === "play")
+			await interaction.reply({ content: "Agni Valley is moving to a Discord Activity — coming soon.", flags: Discord.MessageFlags.Ephemeral });
 	},
 }).return();

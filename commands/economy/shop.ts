@@ -113,7 +113,7 @@ export default new CommandBuilder({
 				paid = r.ok;
 				status = r.ok ? `⚡ Energy refilled for ${GEM_PRICES.energyRefill} 💎.` : "Not enough gems.";
 			}
-			if (paid) await client.game.refillEnergy(userId);
+			// TODO(Task 10): refill energy in the Activity once paid
 			return interaction.editReply(await shopView(client, userId, status));
 		}
 		return interaction.deferUpdate();

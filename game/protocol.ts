@@ -74,11 +74,11 @@ const MAX_STR = 64;
 const str = (v: unknown, max = MAX_STR): string | null => (typeof v === "string" && v.length >= 1 && v.length <= max ? v : null);
 const int = (v: unknown, min: number, max: number): number | null => (typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : null);
 
-export function parseClientMessage(raw: string | Buffer): TClientMsg | null {
+export function parseClientMessage(raw: string | Uint8Array): TClientMsg | null {
 	if (raw.length > MAX_MSG_BYTES) return null;
 	let m: Record<string, unknown>;
 	try {
-		const j: unknown = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"));
+		const j: unknown = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
 		if (typeof j !== "object" || j === null || Array.isArray(j)) return null;
 		m = j as Record<string, unknown>;
 	} catch {

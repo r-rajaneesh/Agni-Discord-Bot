@@ -33,5 +33,6 @@
 			"@Builders/*": ["./builders/*"],
 			"@Managers/*": ["./managers/*"]
 		}
-	}
+	},
+	"exclude": ["node_modules", "activity"]
 }

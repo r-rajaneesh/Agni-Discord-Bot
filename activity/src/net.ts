@@ -10,6 +10,7 @@ export interface TConnectionOpts {
 	onStatus: (s: TConnStatus) => void;
 	WebSocketImpl?: typeof WebSocket;
 	setTimeoutImpl?: typeof setTimeout;
+	clearTimeoutImpl?: typeof clearTimeout;
 }
 
 const BASE_DELAY = 500;
@@ -20,6 +21,7 @@ export class Connection {
 	private ready = false;
 	private stopped = false;
 	private attempt = 0;
+	private timer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(private opts: TConnectionOpts) {
 		this.connect();
@@ -33,10 +35,14 @@ export class Connection {
 
 	close(): void {
 		this.stopped = true;
+		if (this.timer !== null) (this.opts.clearTimeoutImpl ?? clearTimeout)(this.timer);
+		this.timer = null;
 		this.ws?.close();
 	}
 
 	private connect(): void {
+		this.timer = null;
+		if (this.stopped) return;
 		const WS = this.opts.WebSocketImpl ?? WebSocket;
 		this.ready = false;
 		this.opts.onStatus("connecting");
@@ -47,6 +53,7 @@ export class Connection {
 			this.opts.onStatus("open");
 		};
 		ws.onmessage = (e) => {
+			if (this.ws !== ws) return;
 			let m: TServerMsg;
 			try {
 				m = JSON.parse(String(e.data)) as TServerMsg;
@@ -62,6 +69,7 @@ export class Connection {
 			}
 			this.opts.onMessage(m);
 		};
+		// onerror is intentionally unhandled: close always follows an error
 		ws.onclose = () => {
 			if (this.ws !== ws) return;
 			this.ready = false;
@@ -69,7 +77,7 @@ export class Connection {
 			if (this.stopped) return;
 			const delay = Math.min(BASE_DELAY * 2 ** this.attempt, MAX_DELAY);
 			this.attempt++;
-			(this.opts.setTimeoutImpl ?? setTimeout)(() => this.connect(), delay);
+			this.timer = (this.opts.setTimeoutImpl ?? setTimeout)(() => this.connect(), delay);
 		};
 	}
 }

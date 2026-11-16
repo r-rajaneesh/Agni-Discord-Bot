@@ -133,3 +133,13 @@ test("close stops reconnecting", () => {
 	conn.close();
 	expect(delays).toEqual([]);
 });
+
+test("close after drop cancels the pending reconnect", () => {
+	const { conn, last, timers } = setup();
+	last().open();
+	last().drop();
+	const before = FakeWS.all.length;
+	conn.close();
+	timers.shift()!();
+	expect(FakeWS.all.length).toBe(before);
+});

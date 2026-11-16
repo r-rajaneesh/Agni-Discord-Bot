@@ -51,7 +51,8 @@ export function prng(seed: number) {
 	};
 }
 
-function build(): Uint8Array {
+// plotTile fills the old plot rects; the open world stamps the town with them as grass
+function build(plotTile: number): Uint8Array {
 	const m = new Uint8Array(MAP_W * MAP_H).fill(T.grass);
 	const set = (x: number, y: number, t: number) => {
 		if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H) m[y * MAP_W + x] = t;
@@ -74,7 +75,7 @@ function build(): Uint8Array {
 	set(23, 5, T.door);
 	set(24, 5, T.door);
 	// Farm plots
-	PLOTS.forEach((p) => rect(p.x, p.y, p.w, p.h, T.farmland));
+	PLOTS.forEach((p) => rect(p.x, p.y, p.w, p.h, plotTile));
 
 	const rand = prng(0xa9e1);
 	const isFree = (x: number, y: number) => m[y * MAP_W + x] === T.grass;
@@ -107,7 +108,9 @@ function build(): Uint8Array {
 	return m;
 }
 
-export const BASE_MAP = build();
+export const BASE_MAP = build(T.farmland);
+// The town layout without plots, for the open world (game/world.ts)
+export const TOWN_MAP = build(T.grass);
 export const baseTerrain = (x: number, y: number): number =>
 	x < 0 || y < 0 || x >= MAP_W || y >= MAP_H ? T.tree : (BASE_MAP[y * MAP_W + x] as number);
 

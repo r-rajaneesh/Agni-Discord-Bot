@@ -6,7 +6,10 @@
 	"types": "types/global.d.ts",
 	"scripts": {
 		"dev": "bun run index.ts --debug",
-		"start": "bun run index.ts"
+		"start": "bun run index.ts",
+		"activity:dev": "cd activity && bunx vite",
+		"activity:build": "cd activity && bunx vite build",
+		"activity:typecheck": "cd activity && bunx tsc --noEmit"
 	},
 	"devDependencies": {
 		"@types/bun": "latest",

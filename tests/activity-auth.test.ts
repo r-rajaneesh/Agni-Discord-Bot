@@ -24,10 +24,10 @@ describe("ActivityAuth", () => {
 		const { auth, calls } = setup([{ status: 200, body: { access_token: "abc" } }]);
 		const res = await auth.exchangeCode("thecode");
 		expect(res).toEqual({ access_token: "abc" });
-		expect(calls[0].url).toBe("https://discord.com/api/oauth2/token");
-		expect(calls[0].init?.method).toBe("POST");
-		expect((calls[0].init?.headers as Record<string, string>)["Content-Type"]).toBe("application/x-www-form-urlencoded");
-		const body = new URLSearchParams(String(calls[0].init?.body));
+		expect(calls[0]!.url).toBe("https://discord.com/api/oauth2/token");
+		expect(calls[0]!.init?.method).toBe("POST");
+		expect((calls[0]!.init?.headers as Record<string, string>)["Content-Type"]).toBe("application/x-www-form-urlencoded");
+		const body = new URLSearchParams(String(calls[0]!.init?.body));
 		expect(body.get("client_id")).toBe("cid");
 		expect(body.get("client_secret")).toBe("sec");
 		expect(body.get("grant_type")).toBe("authorization_code");
@@ -56,7 +56,7 @@ describe("ActivityAuth", () => {
 		advance(301_000);
 		expect(await auth.verify("tok")).toEqual({ id: "1", name: "u" });
 		expect(calls.length).toBe(2);
-		expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
+		expect((calls[0]!.init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
 	});
 
 	test("verify returns null on 401 and does not cache it", async () => {
@@ -78,7 +78,7 @@ describe("ActivityAuth", () => {
 		expect(await auth.guild("tok", "g2")).toEqual({ id: "g2", name: "Two" });
 		expect(await auth.guild("tok", "g9")).toBeNull();
 		expect(calls.length).toBe(1);
-		expect(calls[0].url).toBe("https://discord.com/api/v10/users/@me/guilds");
+		expect(calls[0]!.url).toBe("https://discord.com/api/v10/users/@me/guilds");
 	});
 
 	test("guild returns null on failure and does not cache it", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CROPS } from "../game/data/crops";
-import { isWalkableTerrain, MAP_H, MAP_W, T, TOWN_MAP } from "../game/map";
+import { isWalkableTerrain, MAP_H, MAP_W, T } from "../game/map";
 import {
 	fieldCrop,
 	LAND_GATE,
@@ -56,14 +56,20 @@ const reach = () => (bfs ??= reachable(400));
 
 describe("world", () => {
 	test("town stamp matches the old layout", () => {
-		const skip = new Set([key(LAND_GATE.x, LAND_GATE.y), ...TOWN_GATES.map((g) => key(g.x, g.y))]);
+		// FNV-1a of the stamped area, recorded when the old map code still existed (Task 3)
+		let sum = 0x811c9dc5;
 		for (let j = 0; j < MAP_H; j++)
-			for (let i = 0; i < MAP_W; i++) {
-				const x = TOWN_ORIGIN.x + i;
-				const y = TOWN_ORIGIN.y + j;
-				if (skip.has(key(x, y))) continue;
-				expect(worldTerrain(x, y)).toBe(TOWN_MAP[j * MAP_W + i] as number);
-			}
+			for (let i = 0; i < MAP_W; i++) sum = Math.imul(sum ^ worldTerrain(TOWN_ORIGIN.x + i, TOWN_ORIGIN.y + j), 0x01000193) >>> 0;
+		expect(sum.toString(16)).toBe("db53780a");
+		// Spot tiles from the old layout, in old map coordinates
+		const old = (i: number, j: number) => worldTerrain(TOWN_ORIGIN.x + i, TOWN_ORIGIN.y + j);
+		for (let i = 20; i < 28; i++) for (const j of [2, 3]) expect(old(i, j)).toBe(T.roof);
+		expect(old(23, 5)).toBe(T.door);
+		expect(old(24, 5)).toBe(T.door);
+		expect(old(42, 15)).toBe(T.bridge);
+		expect(old(43, 16)).toBe(T.bridge);
+		expect(old(42, 5)).toBe(T.water);
+		for (const [i, j] of [[16, 2], [31, 9], [18, 7], [29, 6]] as const) expect(old(i, j)).toBe(T.path);
 		expect(worldTerrain(LAND_GATE.x, LAND_GATE.y)).toBe(T.portal);
 		for (const g of TOWN_GATES) expect(worldTerrain(g.x, g.y)).toBe(T.path);
 		for (const d of SHOP_DOORS) expect(worldTerrain(d.x, d.y)).toBe(T.door);

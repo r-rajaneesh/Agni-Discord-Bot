@@ -149,6 +149,8 @@ export function terrainAt(inst: TInstance, x: number, y: number, now: number): n
 	const tile = inst.tiles.get(tileKey(x, y));
 	if (!tile) return base;
 	if (inst.kind === "world") return tile.regrowAt !== undefined && now < tile.regrowAt ? T.grass : base;
+	// Land cleared for farming stays cleared
+	if (tile.tilled || tile.cropId) return T.grass;
 	if (tile.clearedDay === undefined) return base;
 	const respawn = base === T.tree ? TREE_RESPAWN_DAYS : ROCK_RESPAWN_DAYS;
 	return clock(inst.epoch, now).day < tile.clearedDay + respawn ? T.grass : base;
@@ -221,7 +223,8 @@ export function simulate(inst: TInstance, userId: string, dx: -1 | 0 | 1, dy: -1
 	else if (dx === 0) p.facing = v;
 	else if (p.facing !== h && p.facing !== v) p.facing = h;
 
-	const dist = (WALK_SPEED * dtMs) / 1000;
+	// At most one second per call, so a stalled caller cannot ask for an unbounded number of steps
+	const dist = (WALK_SPEED * Math.min(dtMs, 1000)) / 1000;
 	const len = Math.hypot(dx, dy);
 	const steps = Math.ceil(dist / MAX_STEP);
 	const sx = ((dx / len) * dist) / steps;
@@ -336,12 +339,13 @@ export function use(
 			ok: true,
 			msg: "You till the soil.",
 			changedTiles: [key],
-			apply: () => inst.tiles.set(key, { tilled: true, wateredDays: [] }),
+			// Keeps clearedDay; a tilled tile counts as cleared for good
+			apply: () => inst.tiles.set(key, { ...tile, tilled: true, wateredDays: [] }),
 		});
 	}
 	if (tool === "watering_can") {
 		if (terrain === T.water) return { ok: true, msg: "💧 You refill your watering can." };
-		if (world) return { ok: false, msg: READ_ONLY };
+		if (world) return tile?.tilled ? { ok: false, msg: READ_ONLY } : { ok: false, msg: "Nothing to do here." };
 		if (tile?.tilled) {
 			if (!owner) return { ok: false, msg: NOT_YOURS };
 			if (tile.wateredDays.includes(day)) return { ok: false, msg: "Already watered today." };
@@ -354,7 +358,8 @@ export function use(
 		}
 	}
 	if (item?.category === "seed" && item.cropId) {
-		if (world) return { ok: false, msg: READ_ONLY };
+		if (world)
+			return terrain === T.grass || tile?.tilled ? { ok: false, msg: READ_ONLY } : { ok: false, msg: "Nothing to do here." };
 		if (!tile?.tilled) return { ok: false, msg: "Seeds need tilled soil." };
 		if (tile.cropId) return { ok: false, msg: "Something is already growing here." };
 		if (!owner) return { ok: false, msg: NOT_YOURS };
@@ -400,13 +405,14 @@ export function use(
 	return { ok: false, msg: "Nothing to do here." };
 }
 
-/** Restores energy when facing your house door after 18:00 */
+/** Restores energy when facing the door of your own house after 18:00 */
 export function sleep(inst: TInstance, userId: string, now: number): TActionResult {
 	const p = inst.players.get(userId);
 	if (!p) return { ok: false, msg: "You are not here." };
 	const door = facedTile(p);
 	if (inst.kind !== "land" || door.x !== HOUSE_DOOR.x || door.y !== HOUSE_DOOR.y)
 		return { ok: false, msg: "Face your house door to sleep." };
+	if (inst.ownerId !== userId) return { ok: false, msg: "You can only sleep in your own house." };
 	const { minuteOfDay } = clock(inst.epoch, now);
 	if (minuteOfDay < 18 * 60) return { ok: false, msg: "It's too early to sleep. Come back after 18:00." };
 	return {

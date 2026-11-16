@@ -124,6 +124,12 @@ describe("movement", () => {
 		expect(Math.abs(a.p.x - b.p.x)).toBeLessThan(1e-6);
 		expect(Math.abs(a.p.y - b.p.y)).toBeLessThan(1e-6);
 	});
+	test("a long dtMs moves at most one second", () => {
+		const { inst, p } = land();
+		const x0 = p.x;
+		simulate(inst, "u1", 1, 0, 1e12, T0);
+		expect(p.x - x0).toBeCloseTo(WALK_SPEED, 9);
+	});
 	test("locked chunk blocks", () => {
 		const { inst, p } = land();
 		p.x = 31.0;
@@ -248,8 +254,17 @@ describe("public land", () => {
 		p.equipped = "parsnip_seed";
 		expect(use(inst, "u1", T0, { parsnip_seed: 1 })).toMatchObject({ ok: false, msg: READ_ONLY });
 		p.equipped = "watering_can";
-		expect(use(inst, "u1", T0, {})).toMatchObject({ ok: false, msg: READ_ONLY });
+		expect(use(inst, "u1", T0, {})).toMatchObject({ ok: false, msg: "Nothing to do here." });
 		expect(inst.tiles.size).toBe(0);
+	});
+
+	test("public tools on targets that could never be farmed do nothing", () => {
+		const { inst, p } = lobby();
+		standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.path, -60, -40, 60, 40);
+		p.equipped = "watering_can";
+		expect(use(inst, "u1", T0, {}).msg).toBe("Nothing to do here.");
+		p.equipped = "parsnip_seed";
+		expect(use(inst, "u1", T0, { parsnip_seed: 1 }).msg).toBe("Nothing to do here.");
 	});
 
 	test("public crops harvest and regrow", () => {
@@ -313,6 +328,32 @@ describe("resources on your land", () => {
 		expect(terrainAt(inst, t.x, t.y, T0 + 2 * DAY_MS)).toBe(T.rock);
 	});
 
+	test("chop then till keeps the tile clear forever", () => {
+		const { inst, p } = land();
+		p.equipped = "axe";
+		const t = standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.tree, -15, -15, 47, 47);
+		run(use(inst, "u1", T0, {}));
+		p.equipped = "hoe";
+		expect(run(use(inst, "u1", T0, {})).ok).toBe(true);
+		expect(inst.tiles.get(tileKey(t.x, t.y))).toMatchObject({ tilled: true, clearedDay: 1 });
+		expect(terrainAt(inst, t.x, t.y, T0)).toBe(T.grass);
+		expect(terrainAt(inst, t.x, t.y, T0 + 10 * DAY_MS)).toBe(T.grass);
+	});
+
+	test("crop on a cleared tile is not overgrown", () => {
+		const { inst, p } = land();
+		p.equipped = "pickaxe";
+		const t = standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.rock, -15, -15, 47, 47);
+		run(use(inst, "u1", T0, {}));
+		p.equipped = "hoe";
+		run(use(inst, "u1", T0, {}));
+		p.equipped = "parsnip_seed";
+		expect(run(use(inst, "u1", T0, { parsnip_seed: 1 })).ok).toBe(true);
+		const tile = inst.tiles.get(tileKey(t.x, t.y))!;
+		tile.tilled = false; // even if the soil state were lost, the crop keeps the tile clear
+		expect(terrainAt(inst, t.x, t.y, T0 + 10 * DAY_MS)).toBe(T.grass);
+	});
+
 	test("visitors cannot chop on someone else's land", () => {
 		const { inst } = land("u1");
 		const bob = enter(inst, base("u2"));
@@ -349,6 +390,10 @@ describe("sleep", () => {
 		expect(sleep(inst, "u1", T0).msg).toContain("too early");
 		run(sleep(inst, "u1", evening));
 		expect(p.energy).toBe(MAX_ENERGY);
+
+		const bob = enter(inst, base("u2"), { x: 8.5, y: 8.5, facing: "u" });
+		expect(bob.facing).toBe("u");
+		expect(sleep(inst, "u2", evening)).toMatchObject({ ok: false, msg: "You can only sleep in your own house." });
 
 		const w = lobby();
 		expect(sleep(w.inst, "u1", evening).ok).toBe(false);

@@ -156,6 +156,7 @@ export default class GameServer {
 					conn.state = "pending";
 					return await this.hello(conn, m);
 				}
+				if (conn.state === "pending") return this.drop(conn, 1008, "wait for welcome", "wait for welcome");
 				return this.drop(conn, 1008, "hello first");
 			}
 			const s = conn.session!;
@@ -242,6 +243,8 @@ export default class GameServer {
 		const userId = user.id;
 		// A live session is fresher than the database
 		const old = this.sessions.get(userId);
+		// Saves of a session that just closed land before the reload
+		if (!old) await this.saves;
 		const stored = old ? null : await this.deps.store.loadPlayer(userId);
 		if (!old && !stored) {
 			const r = await this.deps.eco.transact([{ userId, coins: STARTER_COINS, items: STARTER_KIT }], {
@@ -274,9 +277,13 @@ export default class GameServer {
 		if (stored?.location.instanceKind === "world") lastWorld = { x: stored.x, y: stored.y, facing: stored.facing };
 		// Only a position on the same kind of instance is reused
 		const at = prev && (src ? src.rt.inst.kind : kind) === kind ? { x: prev.x, y: prev.y, facing: prev.facing } : undefined;
+		// Leaves first, so the old session's slot doesn't count against its lobby
 		if (current) this.drop(this.connOf(current), 4002, "opened elsewhere", "opened elsewhere");
 
-		const dest = rt ?? this.lobbies.pick(home);
+		// The current or saved lobby while it is open and has room, else the placement rules
+		const n = src ? src.rt.inst.lobby?.n : stored?.location.lobby;
+		const kept = n === undefined ? undefined : this.lobbies.get(n);
+		const dest = rt ?? (kept && kept.inst.players.size < LOBBY_CAP ? kept : this.lobbies.pick(home));
 		const s: TSession = {
 			ws: conn.ws,
 			userId,
@@ -298,8 +305,11 @@ export default class GameServer {
 		await this.pushWallet(userId);
 	}
 
+	// A live session always has its connection: drop() and close() end the session when they remove it
 	private connOf(s: TSession): TConn {
-		return this.conns.get(s.ws.data.connId) ?? { ws: s.ws, state: "ready", invalid: 0, session: s };
+		const conn = this.conns.get(s.ws.data.connId);
+		if (!conn) throw new Error(`session without connection: ${s.userId}`);
+		return conn;
 	}
 
 	private async prices(): Promise<TPrices> {
@@ -566,6 +576,9 @@ export default class GameServer {
 			conn.session = undefined;
 			this.drop(conn, 1012, "server restarting", "server restarting");
 		}
+		for (const { inst } of this.instances.values()) if (inst.kind === "land") dropLand(inst.seed);
+		this.instances.clear();
+		this.lands.clear();
 		await this.saves;
 	}
 }

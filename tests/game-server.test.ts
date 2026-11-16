@@ -49,9 +49,9 @@ const auth = {
 
 let clock = 1_000_000;
 let servers: GameServer[] = [];
-function server() {
+function server(st: InstanceStore = store) {
 	const gs = new GameServer({
-		store,
+		store: st,
 		auth,
 		eco,
 		payments: { hasPass: async () => false, createRazorpayLink: async () => "", razorpayEnabled: false },
@@ -92,8 +92,8 @@ async function join(gs: GameServer, userId: string, guildId: string | null = nul
 	return ws;
 }
 
-// Saved location in the open world, so hello places the player in a lobby
-async function seedWorld(userId: string, x: number, y: number, facing: TDir = "d") {
+// Saved location in the open world, so hello places the player in a lobby (the saved one when given and open)
+async function seedWorld(userId: string, x: number, y: number, lobby?: number, facing: TDir = "d") {
 	await store.savePlayers([
 		{
 			userId,
@@ -105,7 +105,7 @@ async function seedWorld(userId: string, x: number, y: number, facing: TDir = "d
 			x,
 			y,
 			facing,
-			location: { instanceKind: "world", lobby: 1, x, y, facing },
+			location: { instanceKind: "world", ...(lobby === undefined ? {} : { lobby }), x, y, facing },
 		},
 	]);
 }
@@ -224,6 +224,56 @@ describe("sessions", () => {
 		const gs2 = server();
 		const ws2 = await join(gs2, "u1");
 		expect(welcome(ws2).you).toMatchObject({ x: moved.x, y: moved.y, facing: "r" });
+	});
+
+	test("close during a pending hello leaves nothing behind", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		class GatedStore extends InstanceStore {
+			override async getOrCreateLand(ownerId: string, slot = 0) {
+				await gate;
+				return super.getOrCreateLand(ownerId, slot);
+			}
+		}
+		const gs = server(new GatedStore(eco, quiet));
+		const ws = sock();
+		gs.open(ws as any);
+		const pending = gs.message(ws as any, raw({ t: "hello", v: 1, token: "tok:u1", instanceId: "i", guildId: null }));
+		// A message while hello is pending is refused with a reason
+		const ws2 = sock();
+		gs.open(ws2 as any);
+		const pending2 = gs.message(ws2 as any, raw({ t: "hello", v: 1, token: "tok:u2", instanceId: "i", guildId: null }));
+		await gs.message(ws2 as any, raw({ t: "lobbies" }));
+		expect(last(ws2, "kicked")).toEqual({ t: "kicked", reason: "wait for welcome" });
+		expect(ws2.close).toHaveBeenCalled();
+
+		gs.close(ws as any);
+		release();
+		await pending;
+		await pending2;
+		expect(last(ws, "welcome")).toBeUndefined();
+		expect(last(ws2, "welcome")).toBeUndefined();
+		const land = await Land.findOne({ ownerId: "u1" }).lean();
+		const id = `land:${land!.landId}`;
+		expect(gs.instance(id)!.players.size).toBe(0);
+		clock += 5 * 60_000;
+		gs.tick();
+		expect(gs.instance(id)).toBeUndefined();
+		// No session is left: a new hello gets a welcome and nobody is kicked
+		const ws3 = await join(gs, "u1");
+		expect(last(ws3, "welcome")).toBeDefined();
+		expect(last(ws, "kicked")).toBeUndefined();
+	});
+
+	test("shutdown unloads every land", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const { id, seed } = welcome(ws).instance;
+		hold(gs, ws, 1, 0, 1);
+		expect(cachedChunkCount(seed)).toBeGreaterThan(0);
+		await gs.shutdown();
+		expect(gs.instance(id)).toBeUndefined();
+		expect(cachedChunkCount(seed)).toBe(0);
 	});
 
 	test("empty land unloads after 5 minutes", async () => {
@@ -360,6 +410,33 @@ describe("lobbies", () => {
 		expect(gs.instance("lobby:3")).toBeDefined();
 		expect(gs.instance("lobby:1")).toBeDefined();
 		expect(welcome(await join(gs, "k", "K")).instance.lobby).toEqual({ n: 2, label: "Home · K-name" });
+	});
+
+	test("reconnect keeps the switched lobby", async () => {
+		member.b = ["G"];
+		await seedWorld("a", 0.5, -0.5);
+		await seedWorld("b", 5.5, -0.5);
+		const gs = server();
+		const a = await join(gs, "a");
+		await join(gs, "b", "G");
+		await gs.message(a as any, raw({ t: "switchLobby", lobby: 2 }));
+		expect(welcome(a).instance.lobby!.n).toBe(2);
+		// Replacing a live session
+		const a2 = await join(gs, "a");
+		expect(welcome(a2).instance.lobby!.n).toBe(2);
+		// Reloading after the socket closed
+		gs.close(a2 as any);
+		const a3 = await join(gs, "a");
+		expect(welcome(a3).instance.lobby!.n).toBe(2);
+	});
+
+	test("saved lobby that no longer exists falls back to placement", async () => {
+		member.g = ["G"];
+		await seedWorld("p", 0.5, -0.5, 7);
+		await seedWorld("g", 0.5, -0.5, 9);
+		const gs = server();
+		expect(welcome(await join(gs, "p")).instance.lobby).toEqual({ n: 1, label: "Public" });
+		expect(welcome(await join(gs, "g", "G")).instance.lobby).toEqual({ n: 2, label: "Home · G-name" });
 	});
 
 	test("switchLobby keeps position and rejects full or missing lobbies", async () => {

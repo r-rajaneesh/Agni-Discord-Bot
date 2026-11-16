@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CROPS } from "../game/data/crops";
-import { baseTerrain, isWalkableTerrain, MAP_H, MAP_W, plotAt, T } from "../game/map";
+import { isWalkableTerrain, MAP_H, MAP_W, T, TOWN_MAP } from "../game/map";
 import {
 	fieldCrop,
 	LAND_GATE,
@@ -62,7 +62,7 @@ describe("world", () => {
 				const x = TOWN_ORIGIN.x + i;
 				const y = TOWN_ORIGIN.y + j;
 				if (skip.has(key(x, y))) continue;
-				expect(worldTerrain(x, y)).toBe(plotAt(i, j) ? T.grass : baseTerrain(i, j));
+				expect(worldTerrain(x, y)).toBe(TOWN_MAP[j * MAP_W + i] as number);
 			}
 		expect(worldTerrain(LAND_GATE.x, LAND_GATE.y)).toBe(T.portal);
 		for (const g of TOWN_GATES) expect(worldTerrain(g.x, g.y)).toBe(T.path);

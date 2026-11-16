@@ -8,6 +8,10 @@ export type TLocation = { instanceKind: "land" | "world"; landId?: string; lobby
 type TStoredPlayer = TPlayerState & { location: TLocation };
 
 const landInstanceId = (landId: string) => `land:${landId}`;
+function landIdOf(inst: TInstance): string {
+	if (inst.kind !== "land") throw new Error(`not a land instance: ${inst.id}`);
+	return inst.id.slice("land:".length);
+}
 
 export default class InstanceStore {
 	constructor(
@@ -24,10 +28,9 @@ export default class InstanceStore {
 			{ $setOnInsert: { landId, ownerId, slot, seed, epoch: Date.now(), unlocked: START_CHUNKS, createdAt: new Date() } },
 			{ upsert: true, new: true },
 		).lean();
-		const fresh = land;
-		const inst = createLand(landInstanceId(fresh.landId), ownerId, fresh.seed, fresh.epoch);
-		inst.unlocked = new Set(fresh.unlocked);
-		const tiles = await LandTile.find({ landId: fresh.landId }).lean();
+		const inst = createLand(landInstanceId(land.landId), ownerId, land.seed, land.epoch);
+		inst.unlocked = new Set(land.unlocked);
+		const tiles = await LandTile.find({ landId: land.landId }).lean();
 		for (const t of tiles) {
 			const s: TTileState = { wateredDays: t.wateredDays ?? [] };
 			if (t.tilled != null) s.tilled = t.tilled;
@@ -73,7 +76,7 @@ export default class InstanceStore {
 							energy: p.energy,
 							lastEnergyAt: p.lastEnergyAt,
 							equipped: p.equipped,
-							location: p.location,
+							location: { ...p.location, x: p.x, y: p.y, facing: p.facing },
 						},
 					},
 					upsert: true,
@@ -84,7 +87,7 @@ export default class InstanceStore {
 
 	async saveTiles(inst: TInstance, keys: string[]): Promise<void> {
 		if (keys.length === 0) return;
-		const landId = inst.id.slice("land:".length);
+		const landId = landIdOf(inst);
 		await LandTile.bulkWrite(
 			keys.map((key) => {
 				const [x, y] = key.split(",").map(Number) as [number, number];
@@ -102,33 +105,56 @@ export default class InstanceStore {
 		);
 	}
 
-	async unlockChunk(
+	private unlockChains = new Map<string, Promise<unknown>>();
+
+	// Unlocks on one land run one at a time, so the price is computed from the current size
+	unlockChunk(
 		inst: TInstance,
 		userId: string,
 		cx: number,
 		cy: number,
 	): Promise<{ ok: true; price: number } | { ok: false; msg: string }> {
-		if (inst.kind !== "land" || inst.ownerId !== userId) return { ok: false, msg: "Only the owner can expand this land." };
+		if (inst.kind !== "land" || inst.ownerId !== userId) return Promise.resolve({ ok: false, msg: "Only the owner can expand this land." });
+		const landId = landIdOf(inst);
+		const prev = this.unlockChains.get(landId) ?? Promise.resolve();
+		const run = prev.then(() => this.doUnlock(inst, landId, userId, cx, cy));
+		const tail = run.catch(() => {});
+		this.unlockChains.set(landId, tail);
+		void tail.then(() => {
+			if (this.unlockChains.get(landId) === tail) this.unlockChains.delete(landId);
+		});
+		return run;
+	}
+
+	private async doUnlock(
+		inst: TInstance,
+		landId: string,
+		userId: string,
+		cx: number,
+		cy: number,
+	): Promise<{ ok: true; price: number } | { ok: false; msg: string }> {
 		if (!Number.isInteger(cx) || !Number.isInteger(cy)) return { ok: false, msg: "Invalid chunk." };
 		const key = chunkKey(cx, cy);
 		if (inst.unlocked.has(key)) return { ok: false, msg: "Already unlocked." };
 		if (!canUnlock(inst.unlocked, cx, cy)) return { ok: false, msg: "That chunk is not next to your land." };
 		const price = unlockPrice(inst.unlocked.size);
-		const landId = inst.id.slice("land:".length);
-		// The idempotency key makes concurrent unlocks of one chunk charge once
+		// The idempotency key means a retry never charges twice
 		const r = await this.eco.transact([{ userId, coins: -price }], {
 			reason: "chunk_unlock",
 			ref: key,
 			idempotencyKey: `unlock:${landId}:${key}`,
 		});
 		if (!r.ok) return { ok: false, msg: r.message };
-		if (r.duplicate) return { ok: false, msg: "Already unlocked." };
+		// Also runs on a duplicate: the charge happened, so finish persisting a purchase that failed earlier
+		let pushed: number;
 		try {
-			await Land.updateOne({ landId, unlocked: { $ne: key } }, { $push: { unlocked: key } });
+			pushed = (await Land.updateOne({ landId, unlocked: { $ne: key } }, { $push: { unlocked: key } })).modifiedCount;
 		} catch (e) {
 			this.log.error("unlock persist failed after charge", landId, key, e);
+			return { ok: false, msg: "Couldn't save your new land. Try again \u2014 you won't be charged twice." };
 		}
 		inst.unlocked.add(key);
+		if (r.duplicate && pushed === 0) return { ok: false, msg: "Already unlocked." };
 		return { ok: true, price };
 	}
 }

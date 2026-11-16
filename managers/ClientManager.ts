@@ -8,6 +8,7 @@ import LogManager from "./LogManager.ts";
 import mongoose from "mongoose";
 import EconomyManager from "./EconomyManager.ts";
 import PaymentManager from "./PaymentManager.ts";
+import type GameServer from "./GameServer.ts";
 
 class ClientManager extends Discord.Client {
 	public ClientOptions: Discord.ClientOptions;
@@ -22,6 +23,8 @@ class ClientManager extends Discord.Client {
 	public REST: Discord.REST;
 	public economy: EconomyManager;
 	public payments: PaymentManager;
+	/** Set in index.ts, which also builds the HTTP server it serves */
+	public gameServer!: GameServer;
 
 	constructor(
 		ClientOptions: Discord.ClientOptions = {

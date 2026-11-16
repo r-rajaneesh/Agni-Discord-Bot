@@ -15,7 +15,9 @@ function showError(message: string): void {
 }
 
 async function main(): Promise<void> {
-	const session = await setupDiscord(import.meta.env.VITE_DISCORD_CLIENT_ID as string);
+	const clientId = import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined;
+	if (!clientId) throw new Error("VITE_DISCORD_CLIENT_ID is not set");
+	const session = await setupDiscord(clientId);
 	app.textContent = `Signed in (instance ${session.instanceId})`;
 }
 

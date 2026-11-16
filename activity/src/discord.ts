@@ -31,7 +31,9 @@ export async function setupDiscord(
 		body: JSON.stringify({ code }),
 	});
 	if (!res.ok) throw new Error(`Token exchange failed (${res.status})`);
-	const { access_token } = (await res.json()) as { access_token: string };
+	const body = (await res.json()) as { access_token?: unknown };
+	const access_token = body.access_token;
+	if (typeof access_token !== "string" || access_token === "") throw new Error("Token exchange returned no access_token");
 	await sdk.commands.authenticate({ access_token });
 	return { accessToken: access_token, instanceId: sdk.instanceId, guildId: sdk.guildId, channelId: sdk.channelId, sdk: sdk as DiscordSDK };
 }

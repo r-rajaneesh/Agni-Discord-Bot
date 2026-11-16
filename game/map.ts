@@ -12,6 +12,10 @@ export const T = {
 	bridge: 8,
 	flowers: 9,
 	roof: 10,
+	portal: 11,
+	fence: 12,
+	house: 13,
+	field: 14,
 } as const;
 export type TTerrain = (typeof T)[keyof typeof T];
 
@@ -33,11 +37,11 @@ export const PLOTS: TPlot[] = [3, 13, 27, 34].flatMap((x, col) =>
 	[18, 24].map((y, row) => ({ id: col * 2 + row, x, y, w: PLOT_W, h: PLOT_H })),
 );
 
-const WALKABLE = new Set<number>([T.grass, T.path, T.farmland, T.bridge, T.flowers]);
+const WALKABLE = new Set<number>([T.grass, T.path, T.farmland, T.bridge, T.flowers, T.portal, T.field]);
 export const isWalkableTerrain = (t: number) => WALKABLE.has(t);
 
 // mulberry32: tiny seeded PRNG so every world gets the same map
-function prng(seed: number) {
+export function prng(seed: number) {
 	return () => {
 		seed |= 0;
 		seed = (seed + 0x6d2b79f5) | 0;

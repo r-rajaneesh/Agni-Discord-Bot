@@ -20,7 +20,7 @@ import type InstanceStore from "./InstanceStore";
 import type PaymentManager from "./PaymentManager";
 import { ownedItems } from "./models/Cosmetics";
 import { chat, type TChatCtx } from "./game/chat";
-import { action, dailyGems, strike, type TActionCtx } from "./game/actions";
+import { action, dailyGems, limited, strike, type TActionCtx } from "./game/actions";
 import { buyCosmetic, emote, ownedMsg } from "./game/cosmetics";
 import Wildlife from "./game/animals";
 import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
@@ -77,6 +77,8 @@ export interface TSession {
 	visible: Set<TSession>;
 	/** Guild of the launch, when the user is a member; picks the home lobby */
 	home: { id: string; name: string } | null;
+	/** Discord's id for this Activity launch; a reload of the same launch keeps its lobby */
+	instanceId: string;
 	/** Last position and lobby in the open world, used when arriving from private land */
 	lastWorld: { x: number; y: number; facing: TDir; lobby?: number } | null;
 	/** The last `ents` list sent, as JSON, so an unchanged list is not sent again */
@@ -308,7 +310,7 @@ export default class GameServer {
 			if (conn.state === "closed") return;
 			if (!user) return this.drop(conn, 4001, "unauthorized", "unauthorized");
 			const home = m.guildId ? await this.deps.auth.guild(m.token, m.guildId) : null;
-			await this.forUser(user.id, () => this.join(conn, user, home));
+			await this.forUser(user.id, () => this.join(conn, user, home, m.instanceId));
 		} catch (e) {
 			this.deps.log.error("[GAME] hello failed", e);
 			this.drop(conn, 1011, "server error", "server error");
@@ -326,7 +328,7 @@ export default class GameServer {
 		return run;
 	}
 
-	private async join(conn: TConn, user: { id: string; name: string }, home: { id: string; name: string } | null) {
+	private async join(conn: TConn, user: { id: string; name: string }, home: { id: string; name: string } | null, instanceId: string) {
 		const userId = user.id;
 		// A live session is fresher than the database
 		const old = this.sessions.get(userId);
@@ -368,18 +370,30 @@ export default class GameServer {
 			colour: prev?.colour ?? colourOf(userId),
 			premium,
 		};
+		// A lobby from before is kept only within the same Activity launch, or when it is the launch guild's home;
+		// launching from a server otherwise puts the player in its home lobby (spec §4.3)
+		const sameLaunch = (src ? src.instanceId : stored?.location.instanceId) === instanceId;
+		const keep = (n: number | undefined) => {
+			const rt = n === undefined ? undefined : this.lobbies.get(n);
+			if (!rt || rt.inst.players.size >= LOBBY_CAP) return undefined;
+			return sameLaunch || (home !== null && rt.inst.lobby!.homeGuildId === home.id) ? rt : undefined;
+		};
 		let lastWorld = src?.lastWorld ?? null;
 		if (stored?.location.instanceKind === "world")
 			lastWorld = { x: stored.x, y: stored.y, facing: stored.facing, ...(stored.location.lobby === undefined ? {} : { lobby: stored.location.lobby }) };
+		// Travel from private land back to the world follows the same rule
+		if (lastWorld?.lobby !== undefined && !keep(lastWorld.lobby)) {
+			const { lobby: _l, ...pos } = lastWorld;
+			lastWorld = pos;
+		}
 		// Only a position on the same kind of instance is reused
 		const at = prev && (src ? src.rt.inst.kind : kind) === kind ? { x: prev.x, y: prev.y, facing: prev.facing } : undefined;
 		// Leaves first, so the old session's slot doesn't count against its lobby
 		if (current) this.drop(this.connOf(current), 4002, "opened elsewhere", "opened elsewhere");
 
-		// The current or saved lobby while it is open and has room, else the placement rules
-		const n = src ? src.rt.inst.lobby?.n : stored?.location.lobby;
-		const kept = n === undefined ? undefined : this.lobbies.get(n);
-		const dest = rt ?? (kept && kept.inst.players.size < LOBBY_CAP ? kept : this.lobbies.pick(home));
+		// The current or saved lobby while it is open, has room and may be kept, else the placement rules
+		const kept = keep(src ? src.rt.inst.lobby?.n : stored?.location.lobby);
+		const dest = rt ?? kept ?? this.lobbies.pick(home);
 		const s: TSession = {
 			ws: conn.ws,
 			userId,
@@ -391,6 +405,7 @@ export default class GameServer {
 			chunk: { cx: 0, cy: 0 },
 			visible: new Set(),
 			home,
+			instanceId,
 			lastWorld,
 			ents: "[]",
 			actions: [],
@@ -453,6 +468,7 @@ export default class GameServer {
 	}
 
 	private async switchLobby(s: TSession, n: number) {
+		if (limited(this.ctx, s)) return;
 		const check = () => {
 			const rt = this.lobbies.get(n);
 			if (!rt) return `No lobby #${n}.`;
@@ -683,8 +699,8 @@ export default class GameServer {
 		const { inst } = s.rt;
 		const location: TLocation =
 			inst.kind === "land"
-				? { instanceKind: "land", landId: landIdOf(inst), x: p.x, y: p.y, facing: p.facing }
-				: { instanceKind: "world", lobby: inst.lobby!.n, x: p.x, y: p.y, facing: p.facing };
+				? { instanceKind: "land", landId: landIdOf(inst), instanceId: s.instanceId, x: p.x, y: p.y, facing: p.facing }
+				: { instanceKind: "world", lobby: inst.lobby!.n, instanceId: s.instanceId, x: p.x, y: p.y, facing: p.facing };
 		return { ...p, location };
 	}
 

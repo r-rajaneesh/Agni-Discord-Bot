@@ -91,15 +91,15 @@ function last<K extends TServerMsg["t"]>(ws: TSock, t: K) {
 const welcome = (ws: TSock) => last(ws, "welcome")!.snapshot;
 const raw = (m: unknown) => JSON.stringify(m);
 
-async function join(gs: GameServer, userId: string, guildId: string | null = null) {
+async function join(gs: GameServer, userId: string, guildId: string | null = null, instanceId = "i-1") {
 	const ws = sock();
 	gs.open(ws as any);
-	await gs.message(ws as any, raw({ t: "hello", v: 1, token: `tok:${userId}`, instanceId: "i-1", guildId }));
+	await gs.message(ws as any, raw({ t: "hello", v: 1, token: `tok:${userId}`, instanceId, guildId }));
 	return ws;
 }
 
 // Saved location in the open world, so hello places the player in a lobby (the saved one when given and open)
-async function seedWorld(userId: string, x: number, y: number, lobby?: number, facing: TDir = "d") {
+async function seedWorld(userId: string, x: number, y: number, lobby?: number, facing: TDir = "d", instanceId?: string) {
 	await store.savePlayers([
 		{
 			userId,
@@ -111,7 +111,7 @@ async function seedWorld(userId: string, x: number, y: number, lobby?: number, f
 			x,
 			y,
 			facing,
-			location: { instanceKind: "world", ...(lobby === undefined ? {} : { lobby }), x, y, facing },
+			location: { instanceKind: "world", ...(lobby === undefined ? {} : { lobby }), ...(instanceId === undefined ? {} : { instanceId }), x, y, facing },
 		},
 	]);
 }
@@ -518,6 +518,50 @@ describe("lobbies", () => {
 		gs.close(a2 as any);
 		const a3 = await join(gs, "a");
 		expect(welcome(a3).instance.lobby!.n).toBe(2);
+	});
+
+	test("a new launch from a guild goes to its home lobby, a reload of the same launch keeps the switched one", async () => {
+		member.a = ["G"];
+		await seedWorld("a", 0.5, -0.5);
+		const gs = server();
+		const a = await join(gs, "a", "G", "launch-1");
+		expect(welcome(a).instance.lobby!.n).toBe(2);
+		await gs.message(a as any, raw({ t: "switchLobby", lobby: 1 }));
+		expect(welcome(a).instance.lobby!.n).toBe(1);
+		gs.close(a as any);
+		// Same Activity launch (a reload): the saved lobby
+		const a2 = await join(gs, "a", "G", "launch-1");
+		expect(welcome(a2).instance.lobby!.n).toBe(1);
+		// A new launch from G replacing the live session: G's home lobby
+		const a3 = await join(gs, "a", "G", "launch-2");
+		expect(welcome(a3).instance.lobby).toEqual({ n: 2, label: "Home · G-name" });
+		await gs.message(a3 as any, raw({ t: "switchLobby", lobby: 1 }));
+		gs.close(a3 as any);
+		// A new launch from G after the socket closed: G's home lobby again
+		const a4 = await join(gs, "a", "G", "launch-3");
+		expect(welcome(a4).instance.lobby).toEqual({ n: 2, label: "Home · G-name" });
+	});
+
+	test("a saved lobby number reused by another guild's home is not joined", async () => {
+		member.k = ["K"];
+		// p was last in lobby #2 during an earlier launch, when #2 was some other guild's home
+		await seedWorld("p", 0.5, -0.5, 2, "d", "old-launch");
+		await seedWorld("k", 0.5, -0.5);
+		const gs = server();
+		expect(welcome(await join(gs, "k", "K")).instance.lobby).toEqual({ n: 2, label: "Home · K-name" });
+		expect(welcome(await join(gs, "p", null, "new-launch")).instance.lobby).toEqual({ n: 1, label: "Public" });
+	});
+
+	test("switchLobby is rate limited like other actions", async () => {
+		member.b = ["G"];
+		await seedWorld("a", 0.5, -0.5);
+		await seedWorld("b", 5.5, -0.5);
+		const gs = server();
+		const a = await join(gs, "a");
+		await join(gs, "b", "G");
+		for (let i = 0; i < 7; i++) await gs.message(a as any, raw({ t: "switchLobby", lobby: i % 2 ? 1 : 2 }));
+		expect(last(a, "toast")).toEqual({ t: "toast", msg: "Slow down.", ok: false });
+		expect(sent(a).filter((m) => m.t === "welcome")).toHaveLength(1 + 6);
 	});
 
 	test("saved lobby that no longer exists falls back to placement", async () => {

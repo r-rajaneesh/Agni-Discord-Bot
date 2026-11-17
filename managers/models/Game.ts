@@ -40,6 +40,8 @@ const PlayerStateSchema = new mongoose.Schema({
 		instanceKind: { type: String, enum: ["land", "world"], required: true },
 		landId: String,
 		lobby: Number,
+		/** Discord Activity launch the player was last in */
+		instanceId: String,
 		x: Number,
 		y: Number,
 		facing: String,

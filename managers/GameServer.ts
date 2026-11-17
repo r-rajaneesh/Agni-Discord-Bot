@@ -502,6 +502,8 @@ export default class GameServer {
 				const p = s.player;
 				const { x, y, facing } = p;
 				simulate(s.rt.inst, s.userId, i.dx, i.dy, TICK_MS, now);
+				// Exactly one `you` per simulated tick, even when blocked or the input is zero:
+				// the client predictor (activity/src/predict.ts) counts them to know which of its steps the server ran
 				this.send(s.ws, { t: "you", x: p.x, y: p.y, facing: p.facing, ack: s.seq });
 				if (p.x === x && p.y === y && p.facing === facing) continue;
 				s.dirty = true;

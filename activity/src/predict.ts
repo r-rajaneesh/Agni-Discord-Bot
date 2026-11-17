@@ -61,8 +61,9 @@ export class Predictor {
 			const slice = { seq: this.seq, dx: this.dx, dy: this.dy, now: this.now() };
 			if (!you || !this.step(slice)) continue;
 			this.back = { x: you.x - this.state.you!.x, y: you.y - this.state.you!.y };
+			// Dropping only the oldest would skew the one-slice-per-`you` pairing; start over from the next correction
+			if (this.pending.length >= MAX_PENDING) this.pending = [];
 			this.pending.push(slice);
-			if (this.pending.length > MAX_PENDING) this.pending.shift();
 		}
 	}
 

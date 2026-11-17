@@ -48,7 +48,8 @@ export class Hotbar {
 				b.setAttribute("aria-pressed", String(id === equipped));
 				b.append(el("span", "slot-icon", itemIcon(id)));
 				if (i < 9) b.append(el("span", "slot-key", String(i + 1)));
-				if (def?.category === "seed") b.append(el("span", "slot-count", String(inv[id] ?? 0)));
+				// The crop's emoji with a small sprout badge, so seeds don't look like the crop itself
+				if (def?.category === "seed") b.append(el("span", "slot-seed", "🌱"), el("span", "slot-count", String(inv[id] ?? 0)));
 				b.addEventListener("click", () => this.equip(id));
 				return b;
 			}),

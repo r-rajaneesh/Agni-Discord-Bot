@@ -89,6 +89,8 @@ export class Input {
 			return;
 		}
 		if (e.ctrlKey || e.metaKey || e.altKey) return;
+		// Space and Enter press a focused button for keyboard users
+		if ((e.code === "Space" || e.code === "Enter") && document.activeElement instanceof HTMLButtonElement) return;
 		if (MOVE.has(e.code)) {
 			e.preventDefault();
 			this.held.add(e.code);

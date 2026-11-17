@@ -201,6 +201,22 @@ describe("sessions", () => {
 		expect(gs.instance(welcome(ws).instance.id)!.players.get("u1")!.x).toBe(you.x);
 	});
 
+	test("one you per simulated tick, even against a wall or standing still", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const you = () => sent(ws).filter((m) => m.t === "you") as Extract<TServerMsg, { t: "you" }>[];
+		// Up from the land spawn runs into the house wall within a few ticks
+		hold(gs, ws, 0, -1, 30);
+		const ys = you().map((m) => m.y);
+		expect(ys).toHaveLength(30);
+		expect(ys.at(-1)).toBe(ys.at(-2)!);
+		expect(ys.at(-1)).toBeLessThan(welcome(ws).you.y);
+		// A zero input still gets its reply, tick by tick
+		hold(gs, ws, 0, 0, 3);
+		expect(you()).toHaveLength(33);
+		expect(you().at(-1)!.ack).toBe(seqs.get(ws)!);
+	});
+
 	test("closes socket after repeated garbage", async () => {
 		const gs = server();
 		const ws = await join(gs, "u1");

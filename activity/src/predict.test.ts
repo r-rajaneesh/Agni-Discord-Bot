@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createLand, enter, simulate, TICK_MS, type TInstance } from "@game/engine";
+import { createLand, enter, simulate, TICK_MS, WALK_SPEED, type TInstance } from "@game/engine";
 import type { TClientMsg, TPlayerView, TServerMsg } from "@game/protocol";
 import { Predictor, RESEND_MS } from "./predict";
 import { ClientState } from "./state";
@@ -197,6 +197,61 @@ describe("Predictor", () => {
 		pred.reconcile(fix);
 		// Seq 1 is unacknowledged, so its slice replays on top of the corrected spot: everything shifted by +1
 		expect(pred.drawn()!.x).toBeCloseTo(before + 1, 9);
+	});
+
+	test("over a jittery link the prediction ends where the server does", () => {
+		// 1 ms steps: frames every ~16.7 ms, server ticks every 50 ms, each message delayed 40–70 ms, in order
+		let seed = 7;
+		const rand = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+		const { state, pred, clock } = setup();
+		const server = new FakeServer();
+		const start = clock.get();
+		const up: { at: number; m: TClientMsg }[] = [];
+		const down: { at: number; m: Extract<TServerMsg, { t: "you" }> }[] = [];
+		const delay = (q: { at: number }[]) => Math.max(clock.get() + 40 + Math.floor(rand() * 30), q.at(-1)?.at ?? 0);
+		let nextFrame = 0;
+		let nextTick = 7;
+		let lastFrame = start;
+		// The server stops an input older than 250 ms
+		let inputAt = -Infinity;
+		const jumps: number[] = [];
+		// Right for 1.2 s (about a dozen resends), then down-left, then let go and let everything settle
+		const held = (t: number): [-1 | 0 | 1, -1 | 0 | 1] => (t < 1200 ? [1, 0] : t < 1700 ? [-1, 1] : [0, 0]);
+		for (let t = 0; t < 2500; t++) {
+			while (up[0] && up[0].at <= clock.get()) {
+				const before = server.seq;
+				server.receive(up.shift()!.m);
+				if (server.seq !== before) inputAt = clock.get();
+			}
+			if (t >= nextTick) {
+				nextTick += TICK_MS;
+				if (server.input && clock.get() - inputAt < 250) down.push({ at: delay(down), m: server.tick(clock.get()) });
+			}
+			while (down[0] && down[0].at <= clock.get()) {
+				const m = down.shift()!.m;
+				const b = { x: state.you!.x, y: state.you!.y };
+				state.apply(m);
+				pred.reconcile(m);
+				jumps.push(Math.hypot(state.you!.x - b.x, state.you!.y - b.y));
+			}
+			if (t >= nextFrame) {
+				nextFrame += 1000 / 60;
+				const [dx, dy] = held(t);
+				const m = pred.setInput(dx, dy);
+				if (m) up.push({ at: delay(up), m });
+				pred.advance(clock.get() - lastFrame);
+				lastFrame = clock.get();
+			}
+			clock.add(1);
+		}
+		const p = server.inst.players.get("me")!;
+		expect(p.x).toBeGreaterThan(10);
+		expect(state.you!.x).toBeCloseTo(p.x, 9);
+		expect(state.you!.y).toBeCloseTo(p.y, 9);
+		// Along the way a reply moves us by at most one tick of walking, and rarely at all
+		const step = (WALK_SPEED * TICK_MS) / 1000;
+		expect(Math.max(...jumps)).toBeLessThanOrEqual(step + 1e-9);
+		expect(jumps.filter((j) => j > 1e-6).length).toBeLessThan(jumps.length / 4);
 	});
 
 	test("without an instance nothing moves or throws", () => {

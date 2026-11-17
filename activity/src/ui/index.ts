@@ -66,8 +66,9 @@ export class GameUI {
 				this.shop.render();
 				return this.open(this.shop);
 			case "lobbyList":
-				this.lobbies.render(m);
-				return this.open(this.lobbies);
+				// Only for the panel that asked: closed with Esc before the reply, it stays closed
+				if (this.current === this.lobbies) this.lobbies.render(m);
+				return;
 			case "wallet":
 				if (this.inventory.open) this.inventory.render();
 				if (this.shop.open) this.shop.render();

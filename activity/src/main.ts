@@ -1,9 +1,13 @@
 import Phaser from "phaser";
 import { PROTOCOL_VERSION } from "@game/protocol";
 import { setupDiscord } from "./discord";
+import { GameClient } from "./client";
+import { Input } from "./input";
 import { Connection, wsUrl } from "./net";
+import { Predictor } from "./predict";
 import { World } from "./scenes/World";
 import { ClientState } from "./state";
+import { GameUI } from "./ui";
 
 const app = document.getElementById("app")!;
 
@@ -27,52 +31,91 @@ async function main(): Promise<void> {
 	app.textContent = "Connecting…";
 
 	const state = new ClientState();
+	const predictor = new Predictor(state, () => Date.now());
+	let conn: Connection | null = null;
 	let game: Phaser.Game | null = null;
 	let world: World | null = null;
-	let kicked = false;
+	let ui: GameUI | null = null;
+	let input: Input | null = null;
+	let raf = 0;
 	// Shown over the game while the socket is reconnecting
 	const banner = document.createElement("div");
 	banner.className = "banner";
 	banner.textContent = "Reconnecting…";
 
-	// The scene starts on the first welcome; later welcomes (lobby switch, travel) go through handle()
-	const start = () => {
-		app.textContent = "";
-		app.className = "game";
-		banner.hidden = true;
-		app.append(banner);
-		world = new World(state);
-		game = new Phaser.Game({
-			type: Phaser.AUTO,
-			parent: app,
-			backgroundColor: "#14181f",
-			pixelArt: true,
-			roundPixels: true,
-			scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
-			scene: world,
-		});
+	// Input and prediction run every animation frame, beside Phaser's own loop
+	let last = performance.now();
+	const frame = (t: number) => {
+		const dt = t - last;
+		last = t;
+		const d = input?.dir() ?? { dx: 0, dy: 0 };
+		client.frame(dt, d.dx, d.dy);
+		ui?.update(Date.now());
+		raf = requestAnimationFrame(frame);
 	};
 
-	new Connection({
-		url: wsUrl(),
-		hello: () => ({ t: "hello", v: PROTOCOL_VERSION, token: session.accessToken, instanceId: session.instanceId, guildId: session.guildId }),
-		onMessage: (m) => {
-			if (m.t === "kicked") {
-				kicked = true;
-				game?.destroy(true);
-				game = null;
-				showError(m.reason, "Disconnected");
-				return;
-			}
-			const hints = state.apply(m);
-			if (m.t === "welcome" && !game) start();
-			else world?.handle(hints);
+	const client = new GameClient({
+		state,
+		predictor,
+		send: (m) => conn?.send(m),
+		// The scene starts on the first welcome; later welcomes (lobby switch, travel) go through handle()
+		start: () => {
+			app.textContent = "";
+			app.className = "game";
+			banner.hidden = true;
+			app.append(banner);
+			world = new World(state, () => predictor.drawn());
+			game = new Phaser.Game({
+				type: Phaser.AUTO,
+				parent: app,
+				backgroundColor: "#14181f",
+				pixelArt: true,
+				roundPixels: true,
+				scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+				scene: world,
+			});
+			const gameUi = new GameUI(app, state, (m) => client.send(m));
+			ui = gameUi;
+			input = new Input(
+				{
+					use: () => gameUi.use(),
+					inventory: () => gameUi.toggleInventory(),
+					slot: (i) => gameUi.slot(i),
+					close: () => gameUi.close(),
+					lobbies: () => gameUi.toggleLobbies(),
+					chat: () => gameUi.focusChat(),
+				},
+				gameUi.root,
+			);
+			last = performance.now();
+			raf = requestAnimationFrame(frame);
 		},
-		onStatus: (s) => {
-			if (kicked) return;
+		handle: (hints, m) => {
+			world?.handle(hints);
+			ui?.message(m);
+		},
+		// Final: GameClient ignores everything after this, so nothing can restart the game over this screen
+		kicked: (reason) => {
+			cancelAnimationFrame(raf);
+			input?.destroy();
+			input = null;
+			game?.destroy(true);
+			game = null;
+			world = null;
+			ui = null;
+			showError(reason, "Disconnected");
+		},
+		status: (s) => {
 			if (game) banner.hidden = s === "ready";
 			else app.textContent = s === "ready" ? "Connected" : "Connecting…";
 		},
+	});
+
+	conn = new Connection({
+		url: wsUrl(),
+		hello: () => ({ t: "hello", v: PROTOCOL_VERSION, token: session.accessToken, instanceId: session.instanceId, guildId: session.guildId }),
+		onMessage: (m) => client.onMessage(m),
+		onStatus: (s) => client.onStatus(s),
 	});
 }
 

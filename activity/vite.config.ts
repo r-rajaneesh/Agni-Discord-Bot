@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+	// game/data/products.ts reads Discord SKU ids from the server's env; the browser has none
+	define: { "process.env": "{}" },
 	resolve: {
 		alias: { "@game": fileURLToPath(new URL("../game", import.meta.url)) },
 	},

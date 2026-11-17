@@ -29,7 +29,11 @@ export class World extends Phaser.Scene {
 	private others = new Map<string, TOther>();
 	private animals = new Map<number, TWild>();
 
-	constructor(private state: ClientState) {
+	/** `youAt` says where to draw our own player (the predictor smooths it between ticks) */
+	constructor(
+		private state: ClientState,
+		private youAt: () => { x: number; y: number } | null = () => state.you,
+	) {
 		super("world");
 	}
 
@@ -69,17 +73,18 @@ export class World extends Phaser.Scene {
 
 	override update(): void {
 		const you = this.state.you;
-		if (you && this.me) {
+		const at = you && this.youAt();
+		if (you && at && this.me) {
 			this.me.setView(you);
-			this.me.setPosition(you.x * TILE, you.y * TILE).setDepth(you.y);
+			this.me.setPosition(at.x * TILE, at.y * TILE).setDepth(at.y);
 		}
-		const at = performance.now() - INTERP_DELAY_MS;
+		const past = performance.now() - INTERP_DELAY_MS;
 		for (const o of this.others.values()) {
-			const p = o.buf.sample(at);
+			const p = o.buf.sample(past);
 			if (p) o.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
 		}
 		for (const a of this.animals.values()) {
-			const p = a.buf.sample(at);
+			const p = a.buf.sample(past);
 			if (p) a.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
 		}
 		const inst = this.state.instance;

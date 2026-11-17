@@ -16,7 +16,12 @@ export default new CommandBuilder({
 		.addSubcommand((play) => play.setName("play").setDescription("Open your farm")),
 	execute: async ({ client, interaction }) => {
 		if (!interaction?.isChatInputCommand() || !interaction.guildId) return;
-		if (interaction.options.getSubcommand() === "play")
-			await interaction.reply({ content: "Agni Valley is moving to a Discord Activity — coming soon.", flags: Discord.MessageFlags.Ephemeral });
+		if (interaction.options.getSubcommand() !== "play") return;
+		try {
+			await interaction.launchActivity();
+		} catch (e) {
+			client.log.warn("[FARM] launchActivity failed", e);
+			await interaction.reply({ content: "Activities aren't enabled for this app yet.", flags: Discord.MessageFlags.Ephemeral });
+		}
 	},
 }).return();

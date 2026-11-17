@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import * as globby from "globby";
 import path from "node:path";
 
@@ -126,5 +126,37 @@ describe("shop", () => {
 		const { PRODUCTS } = await import("../game/data/products");
 		expect(PRODUCTS.map((p) => p.id)).toEqual(["farm_pass", "emotes_party_pack"]);
 		expect(PRODUCTS.map((p) => p.kind)).toEqual(["pass", "cosmetic"]);
+	});
+});
+
+describe("farm play", () => {
+	const run = async (launchActivity: () => Promise<unknown>) => {
+		const { default: command } = await import(path.resolve("./commands/farm/play.ts"));
+		const reply = mock(async (_: unknown) => {});
+		const interaction = {
+			isChatInputCommand: () => true,
+			guildId: "g1",
+			options: { getSubcommand: () => "play" },
+			launchActivity,
+			reply,
+		};
+		await command.execute({ client: { log: { warn: () => {} } }, interaction });
+		return reply;
+	};
+
+	test("farm play calls launchActivity", async () => {
+		const launch = mock(async () => undefined);
+		const reply = await run(launch);
+		expect(launch).toHaveBeenCalledTimes(1);
+		expect(reply).not.toHaveBeenCalled();
+	});
+
+	test("farm play falls back when launchActivity throws", async () => {
+		const reply = await run(async () => {
+			throw new Error("no activity");
+		});
+		expect(reply).toHaveBeenCalledTimes(1);
+		const arg = reply.mock.calls[0]![0] as { content: string };
+		expect(arg.content).toBe("Activities aren't enabled for this app yet.");
 	});
 });

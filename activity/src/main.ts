@@ -5,6 +5,7 @@ import { GameClient } from "./client";
 import { Input } from "./input";
 import { Connection, wsUrl } from "./net";
 import { Predictor } from "./predict";
+import { Boot } from "./scenes/Boot";
 import { World } from "./scenes/World";
 import { ClientState } from "./state";
 import { GameUI } from "./ui";
@@ -69,10 +70,13 @@ async function main(): Promise<void> {
 				type: Phaser.AUTO,
 				parent: app,
 				backgroundColor: "#14181f",
-				pixelArt: true,
+				// Smooth vector art: linear filtering, with mipmaps so the 128 px atlas frames shrink cleanly to 48 px
+				pixelArt: false,
+				antialias: true,
 				roundPixels: true,
+				render: { mipmapFilter: "LINEAR_MIPMAP_LINEAR" },
 				scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
-				scene: world,
+				scene: [new Boot(), world],
 			});
 			const gameUi = new GameUI(app, state, (m) => client.send(m));
 			ui = gameUi;

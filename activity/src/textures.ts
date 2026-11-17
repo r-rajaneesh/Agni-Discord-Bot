@@ -1,446 +1,104 @@
-// Procedural 16×16 pixel art, ported from the old server renderer, plus which sprites make up each tile
+// Loads the atlases, makes the walk animations, and says which tile frames make up each tile
 import type Phaser from "phaser";
 import { CHUNK, chunkKey, chunkOf, landBaseTerrain } from "@game/chunks";
-import { CROPS } from "@game/data/crops";
-import { HOUSE_DOOR, clock, cropStage, terrainAt, tileKey, type TDir, type TInstance } from "@game/engine";
+import { HOUSE_DOOR, clock, cropStage, terrainAt, tileKey, type TInstance } from "@game/engine";
 import { T } from "@game/map";
+import type { TDir } from "@game/protocol";
 import { fieldCrop } from "@game/world";
+import { ANIMAL_FRAMES, ATLASES, CHARACTER_DETAIL_FRAMES, CHARACTER_FRAMES, CROP_FRAMES, FIELD_FRAMES, TILES, WATER_FRAMES, WATER_FRAME_MS, frameFor, tileHash, type TFrameRef } from "./assets/manifest";
 
-export const SRC = 16; // sprite pixel size
-export const SCALE = 3;
-export const TILE = SRC * SCALE; // 48px on screen
-
-type TPx = (x: number, y: number, w: number, h: number, c: string) => void;
-
-function sprite(draw: (px: TPx) => void): HTMLCanvasElement {
-	const c = document.createElement("canvas");
-	c.width = SRC;
-	c.height = SRC;
-	const ctx = c.getContext("2d")!;
-	draw((x, y, w, h, colour) => {
-		ctx.fillStyle = colour;
-		ctx.fillRect(x, y, w, h);
-	});
-	return c;
+/** Queues every atlas; paths are relative so they load from the Activity's own origin */
+export function loadAtlases(load: Phaser.Loader.LoaderPlugin): void {
+	for (const a of ATLASES) load.atlas(a, `assets/${a}.png`, `assets/${a}.json`);
 }
 
-const grassBase = (px: TPx, seed: number) => {
-	px(0, 0, 16, 16, "#5fa845");
-	for (let i = 0; i < 6; i++) {
-		const h = (seed * 31 + i * 17) % 256;
-		px(h % 16, (h >> 4) % 16, 1, 2, "#4f9238");
-	}
-};
+const WALK_FPS = 8;
+// Step, stand, other step, stand: frame 0 is standing
+const CYCLE = [1, 0, 2, 0];
+const walk = (frames: TFrameRef[]) => CYCLE.map((i) => ({ key: frames[i]!.atlas, frame: frames[i]!.frame }));
 
-const tilledBase = (px: TPx) => {
-	px(0, 0, 16, 16, "#6b4a2b");
-	for (let y = 2; y < 16; y += 4) px(1, y, 14, 1, "#563a20");
-};
+export const bodyAnim = (d: TDir) => `body-${d}`;
+export const detailAnim = (d: TDir) => `detail-${d}`;
+export const animalAnim = (kind: string, d: TDir) => `animal-${kind}-${d}`;
 
-const ripe = (colour: string) => (px: TPx) => {
-	px(7, 3, 2, 6, "#3c9a3c");
-	px(4, 4, 3, 2, "#57c157");
-	px(9, 4, 3, 2, "#57c157");
-	px(4, 8, 8, 6, colour);
-	px(5, 9, 2, 2, "rgba(255,255,255,0.45)");
-};
-
-// A public field: tilled soil with two rows of ripe plants
-const field = (colour: string) => (px: TPx) => {
-	tilledBase(px);
-	for (const y of [1, 9])
-		for (const x of [1, 6, 11]) {
-			px(x + 1, y, 1, 3, "#3c9a3c");
-			px(x, y + 1, 1, 1, "#57c157");
-			px(x + 2, y + 1, 1, 1, "#57c157");
-			px(x, y + 3, 3, 3, colour);
-			px(x, y + 3, 1, 1, "rgba(255,255,255,0.45)");
-		}
-};
-
-const STATIC: Record<string, (px: TPx) => void> = {
-	grass0: (px) => grassBase(px, 0),
-	grass1: (px) => grassBase(px, 1),
-	grass2: (px) => grassBase(px, 2),
-	grass3: (px) => grassBase(px, 3),
-	path: (px) => {
-		px(0, 0, 16, 16, "#c9a86b");
-		px(3, 4, 2, 1, "#b8955a");
-		px(10, 11, 3, 1, "#b8955a");
-		px(12, 2, 1, 1, "#b8955a");
-	},
-	water: (px) => {
-		px(0, 0, 16, 16, "#3b7dd8");
-		px(2, 4, 4, 1, "#6aa5ee");
-		px(9, 10, 5, 1, "#6aa5ee");
-	},
-	farmland: (px) => {
-		px(0, 0, 16, 16, "#8a6a43");
-		px(0, 0, 16, 1, "#7a5c38");
-		px(0, 0, 1, 16, "#7a5c38");
-	},
-	tilled: tilledBase,
-	watered: (px) => {
-		px(0, 0, 16, 16, "#4b331d");
-		for (let y = 2; y < 16; y += 4) px(1, y, 14, 1, "#3a2714");
-	},
-	wall: (px) => {
-		px(0, 0, 16, 16, "#d9c3a0");
-		px(0, 7, 16, 1, "#b9a27f");
-		px(7, 0, 1, 7, "#b9a27f");
-		px(3, 8, 1, 8, "#b9a27f");
-		px(11, 8, 1, 8, "#b9a27f");
-	},
-	roof: (px) => {
-		px(0, 0, 16, 16, "#b0413e");
-		for (let y = 1; y < 16; y += 3) px(0, y, 16, 1, "#8e2f2d");
-	},
-	door: (px) => {
-		px(0, 0, 16, 16, "#d9c3a0");
-		px(3, 2, 10, 14, "#7a4b24");
-		px(4, 3, 8, 13, "#8e5a2c");
-		px(10, 9, 1, 2, "#f1c40f");
-	},
-	bridge: (px) => {
-		px(0, 0, 16, 16, "#3b7dd8");
-		px(0, 1, 16, 14, "#9c7444");
-		for (let x = 3; x < 16; x += 4) px(x, 1, 1, 14, "#7d5b33");
-	},
-	flowers: (px) => {
-		px(0, 0, 16, 16, "#5fa845");
-		px(3, 3, 2, 2, "#f5e663");
-		px(10, 6, 2, 2, "#ef7fb0");
-		px(5, 11, 2, 2, "#ffffff");
-		px(12, 12, 2, 2, "#f5e663");
-	},
-	tree: (px) => {
-		px(6, 10, 4, 6, "#6b4423");
-		px(2, 1, 12, 10, "#2f7a32");
-		px(3, 2, 6, 4, "#3f9142");
-		px(1, 4, 14, 5, "#2f7a32");
-	},
-	rock: (px) => {
-		px(2, 6, 12, 8, "#8b8f94");
-		px(4, 4, 8, 3, "#9aa0a6");
-		px(4, 7, 4, 2, "#b3b8bd");
-		px(2, 13, 12, 1, "#6d7176");
-	},
-	seedling: (px) => {
-		px(7, 8, 2, 5, "#3c9a3c");
-		px(5, 8, 2, 2, "#57c157");
-		px(9, 7, 2, 2, "#57c157");
-	},
-	sprout: (px) => {
-		px(7, 4, 2, 10, "#3c9a3c");
-		px(4, 6, 3, 3, "#57c157");
-		px(9, 5, 3, 3, "#57c157");
-		px(4, 10, 3, 2, "#57c157");
-		px(9, 9, 3, 2, "#57c157");
-	},
-	// Glowing stone, drawn over grass
-	portal: (px) => {
-		px(2, 4, 12, 11, "rgba(122,215,255,0.25)");
-		px(4, 2, 8, 2, "rgba(122,215,255,0.25)");
-		px(4, 5, 8, 9, "#6f7680");
-		px(5, 3, 6, 2, "#828a94");
-		px(4, 14, 8, 1, "#50565e");
-		px(7, 6, 2, 6, "#7ad7ff");
-		px(6, 8, 4, 2, "#7ad7ff");
-		px(7, 8, 2, 2, "#e8fbff");
-	},
-	// Posts and two rails, drawn over grass
-	fence: (px) => {
-		px(0, 5, 16, 2, "#a0763f");
-		px(0, 10, 16, 2, "#a0763f");
-		px(0, 7, 16, 1, "#7d5b33");
-		px(0, 12, 16, 1, "#7d5b33");
-		for (const x of [1, 12]) {
-			px(x, 3, 3, 12, "#8a6235");
-			px(x, 3, 3, 1, "#b88a4f");
-			px(x, 14, 3, 1, "#5e4224");
-		}
-	},
-	house_roof: (px) => {
-		px(0, 0, 16, 16, "#6e4b8c");
-		for (let y = 2; y < 16; y += 3) px(0, y, 16, 1, "#563a6e");
-		px(0, 15, 16, 1, "#3f2a52");
-	},
-	house_wall: (px) => {
-		px(0, 0, 16, 16, "#c79a6b");
-		for (let y = 3; y < 16; y += 4) px(0, y, 16, 1, "#a87c50");
-		px(4, 5, 8, 6, "#5b3a22");
-		px(5, 6, 6, 4, "#9fd3f0");
-		px(7, 6, 2, 4, "#5b3a22");
-	},
-	house_door: (px) => {
-		px(0, 0, 16, 16, "#c79a6b");
-		for (let y = 3; y < 16; y += 4) px(0, y, 16, 1, "#a87c50");
-		px(4, 3, 8, 13, "#5b3a22");
-		px(5, 4, 6, 12, "#7a4b24");
-		px(9, 10, 1, 2, "#f1c40f");
-	},
-	dim: (px) => px(0, 0, 16, 16, "rgba(0,0,0,0.5)"),
-	crown: (px) => {
-		px(4, 13, 8, 2, "#f1c40f");
-		px(4, 11, 2, 2, "#f1c40f");
-		px(7, 11, 2, 2, "#f1c40f");
-		px(10, 11, 2, 2, "#f1c40f");
-	},
-};
-
-export function registerTextures(textures: Phaser.Textures.TextureManager): void {
-	const add = (key: string, draw: (px: TPx) => void) => {
-		if (!textures.exists(key)) textures.addCanvas(key, sprite(draw));
+/** The 4-direction walk animations for the player layers and every animal kind */
+export function createAnims(anims: Phaser.Animations.AnimationManager): void {
+	const add = (key: string, frames: TFrameRef[]) => {
+		if (!anims.exists(key)) anims.create({ key, frames: walk(frames), frameRate: WALK_FPS, repeat: -1 });
 	};
-	for (const [key, draw] of Object.entries(STATIC)) add(key, draw);
-	for (const crop of Object.values(CROPS)) {
-		add(`ripe:${crop.id}`, ripe(crop.colour));
-		add(`field:${crop.id}`, field(crop.colour));
+	for (const d of ["u", "d", "l", "r"] as const) {
+		add(bodyAnim(d), CHARACTER_FRAMES[d]);
+		add(detailAnim(d), CHARACTER_DETAIL_FRAMES[d]);
+		for (const [kind, f] of Object.entries(ANIMAL_FRAMES)) add(animalAnim(kind, d), f[d]);
 	}
 }
 
-const EYES: Record<TDir, [number, number][]> = { d: [[5, 4], [9, 4]], u: [], l: [[4, 4]], r: [[11, 4]] };
-
-/** Player sprite for a colour and facing, made on first use */
-export function playerTexture(textures: Phaser.Textures.TextureManager, colour: string, facing: TDir): string {
-	const key = `player:${colour}:${facing}`;
-	if (!textures.exists(key))
-		textures.addCanvas(
-			key,
-			sprite((px) => {
-				px(4, 14, 8, 2, "rgba(0,0,0,0.25)");
-				px(4, 7, 8, 7, colour); // body
-				px(4, 1, 8, 6, "#f2c9a0"); // head
-				px(4, 1, 8, 2, "#4a2f1b"); // hair
-				for (const [ex, ey] of EYES[facing]) px(ex, ey, 2, 2, "#222");
-			}),
-		);
-	return key;
-}
-
-// Wild animals: a side view facing right (mirrored for left), a front view (down) and a back view (up)
-type TAnimalArt = { side: (px: TPx) => void; front: (px: TPx) => void; back: (px: TPx) => void };
-const SHADOW = "rgba(0,0,0,0.25)";
-const EYE = "#222";
-
-const ANIMAL_ART: Record<string, TAnimalArt> = {
-	rabbit: {
-		side: (px) => {
-			px(4, 14, 9, 1, SHADOW);
-			px(4, 9, 7, 5, "#d8d2c8");
-			px(10, 7, 4, 4, "#d8d2c8");
-			px(11, 3, 1, 4, "#d8d2c8");
-			px(12, 3, 1, 4, "#c4beb4");
-			px(3, 10, 2, 2, "#ffffff");
-			px(5, 13, 2, 1, "#b8b2a8");
-			px(9, 13, 2, 1, "#b8b2a8");
-			px(12, 8, 1, 1, EYE);
-			px(14, 9, 1, 1, "#e8a0a8");
-		},
-		front: (px) => {
-			px(4, 14, 8, 1, SHADOW);
-			px(5, 9, 6, 5, "#d8d2c8");
-			px(5, 6, 6, 4, "#d8d2c8");
-			px(5, 2, 2, 4, "#d8d2c8");
-			px(9, 2, 2, 4, "#d8d2c8");
-			px(6, 3, 1, 2, "#e8a0a8");
-			px(9, 3, 1, 2, "#e8a0a8");
-			px(6, 7, 1, 1, EYE);
-			px(9, 7, 1, 1, EYE);
-			px(7, 8, 2, 1, "#e8a0a8");
-		},
-		back: (px) => {
-			px(4, 14, 8, 1, SHADOW);
-			px(5, 9, 6, 5, "#d8d2c8");
-			px(5, 6, 6, 4, "#d8d2c8");
-			px(5, 2, 2, 4, "#d8d2c8");
-			px(9, 2, 2, 4, "#d8d2c8");
-			px(7, 11, 2, 2, "#ffffff");
-		},
-	},
-	deer: {
-		side: (px) => {
-			px(3, 15, 11, 1, SHADOW);
-			for (const x of [4, 6, 10, 12]) px(x, 11, 1, 4, "#6b4423");
-			px(3, 7, 10, 5, "#a86b3c");
-			px(4, 11, 8, 1, "#d9b38c");
-			px(5, 8, 1, 1, "#d9b38c");
-			px(8, 9, 1, 1, "#d9b38c");
-			px(11, 4, 2, 4, "#a86b3c");
-			px(12, 3, 3, 3, "#a86b3c");
-			px(15, 4, 1, 1, "#3d2a1e");
-			px(12, 0, 1, 3, "#e0d0b0");
-			px(14, 0, 1, 3, "#e0d0b0");
-			px(11, 1, 1, 1, "#e0d0b0");
-			px(2, 7, 1, 2, "#ffffff");
-			px(13, 4, 1, 1, EYE);
-		},
-		front: (px) => {
-			px(4, 15, 8, 1, SHADOW);
-			px(5, 11, 1, 4, "#6b4423");
-			px(10, 11, 1, 4, "#6b4423");
-			px(4, 7, 8, 5, "#a86b3c");
-			px(6, 9, 4, 3, "#d9b38c");
-			px(6, 3, 4, 4, "#a86b3c");
-			px(5, 0, 1, 3, "#e0d0b0");
-			px(10, 0, 1, 3, "#e0d0b0");
-			px(4, 1, 1, 1, "#e0d0b0");
-			px(11, 1, 1, 1, "#e0d0b0");
-			px(6, 4, 1, 1, EYE);
-			px(9, 4, 1, 1, EYE);
-			px(7, 6, 2, 1, "#3d2a1e");
-		},
-		back: (px) => {
-			px(4, 15, 8, 1, SHADOW);
-			px(5, 11, 1, 4, "#6b4423");
-			px(10, 11, 1, 4, "#6b4423");
-			px(4, 7, 8, 5, "#a86b3c");
-			px(6, 3, 4, 4, "#a86b3c");
-			px(5, 0, 1, 3, "#e0d0b0");
-			px(10, 0, 1, 3, "#e0d0b0");
-			px(4, 1, 1, 1, "#e0d0b0");
-			px(11, 1, 1, 1, "#e0d0b0");
-			px(7, 8, 2, 2, "#ffffff");
-		},
-	},
-	duck: {
-		side: (px) => {
-			px(3, 14, 9, 1, SHADOW);
-			px(3, 9, 9, 5, "#f4f1e8");
-			px(5, 10, 5, 2, "#c9c3b5");
-			px(2, 9, 2, 2, "#c9c3b5");
-			px(10, 5, 4, 4, "#2f8a4a");
-			px(10, 9, 3, 1, "#ffffff");
-			px(14, 7, 2, 1, "#f39c12");
-			px(6, 14, 2, 1, "#f39c12");
-			px(9, 14, 2, 1, "#f39c12");
-			px(12, 6, 1, 1, EYE);
-		},
-		front: (px) => {
-			px(4, 14, 8, 1, SHADOW);
-			px(4, 9, 8, 5, "#f4f1e8");
-			px(5, 5, 6, 4, "#2f8a4a");
-			px(5, 9, 6, 1, "#ffffff");
-			px(7, 8, 2, 2, "#f39c12");
-			px(6, 6, 1, 1, EYE);
-			px(9, 6, 1, 1, EYE);
-		},
-		back: (px) => {
-			px(4, 14, 8, 1, SHADOW);
-			px(4, 9, 8, 5, "#f4f1e8");
-			px(5, 10, 6, 3, "#c9c3b5");
-			px(5, 5, 6, 4, "#2f8a4a");
-		},
-	},
-	boar: {
-		side: (px) => {
-			px(3, 15, 11, 1, SHADOW);
-			px(4, 12, 2, 3, "#3d2a1e");
-			px(10, 12, 2, 3, "#3d2a1e");
-			px(3, 6, 10, 7, "#5b4030");
-			px(4, 5, 7, 1, "#3d2a1e");
-			px(12, 7, 3, 4, "#5b4030");
-			px(12, 6, 1, 1, "#3d2a1e");
-			px(15, 9, 1, 2, "#c98d7a");
-			px(14, 11, 1, 1, "#ffffff");
-			px(13, 8, 1, 1, EYE);
-		},
-		front: (px) => {
-			px(3, 15, 10, 1, SHADOW);
-			px(4, 13, 2, 2, "#3d2a1e");
-			px(10, 13, 2, 2, "#3d2a1e");
-			px(3, 6, 10, 7, "#5b4030");
-			px(5, 7, 6, 5, "#6e4e3a");
-			px(5, 6, 1, 1, "#3d2a1e");
-			px(10, 6, 1, 1, "#3d2a1e");
-			px(6, 10, 4, 2, "#c98d7a");
-			px(5, 11, 1, 1, "#ffffff");
-			px(10, 11, 1, 1, "#ffffff");
-			px(6, 8, 1, 1, EYE);
-			px(9, 8, 1, 1, EYE);
-		},
-		back: (px) => {
-			px(3, 15, 10, 1, SHADOW);
-			px(4, 13, 2, 2, "#3d2a1e");
-			px(10, 13, 2, 2, "#3d2a1e");
-			px(3, 6, 10, 7, "#5b4030");
-			px(4, 5, 8, 1, "#3d2a1e");
-			px(7, 7, 2, 1, "#3d2a1e");
-		},
-	},
-};
-
-/** Animal sprite for a kind and facing, made on first use; an unknown kind draws as a rabbit */
-export function animalTexture(textures: Phaser.Textures.TextureManager, kind: string, facing: TDir): string {
-	const art = ANIMAL_ART[kind] ?? ANIMAL_ART.rabbit!;
-	const key = `animal:${ANIMAL_ART[kind] ? kind : "rabbit"}:${facing}`;
-	if (!textures.exists(key))
-		textures.addCanvas(
-			key,
-			sprite((px) => {
-				if (facing === "d") art.front(px);
-				else if (facing === "u") art.back(px);
-				else if (facing === "r") art.side(px);
-				else art.side((x, y, w, h, c) => px(SRC - x - w, y, w, h, c));
-			}),
-		);
-	return key;
-}
-
-const GROUND: Record<number, string> = {
-	[T.path]: "path",
-	[T.water]: "water",
-	[T.farmland]: "farmland",
-	[T.wall]: "wall",
-	[T.roof]: "roof",
-	[T.door]: "door",
-	[T.bridge]: "bridge",
-	[T.flowers]: "flowers",
-};
+/** Which water frame a tile shows at `now`; neighbours are out of step so the river shimmers */
+export const waterStep = (now: number) => Math.floor(now / WATER_FRAME_MS);
+const water = (x: number, y: number, now: number) => WATER_FRAMES[(waterStep(now) + tileHash(x, y)) % WATER_FRAMES.length]!.frame;
 
 const mod = (n: number, m: number) => ((n % m) + m) % m;
-const grass = (x: number, y: number) => `grass${mod(x * 7 + y * 13, 4)}`;
+// Ground that fills the whole tile; the rest are drawn over grass
+const GROUND = new Set<number>([T.path, T.farmland, T.wall, T.door, T.bridge, T.flowers]);
+const OVERLAY = new Set<number>([T.tree, T.rock, T.portal]);
 
-function house(inst: TInstance, x: number, y: number, now: number): string {
-	if (terrainAt(inst, x, y - 1, now) !== T.house) return "house_roof";
-	if (x === HOUSE_DOOR.x && y === HOUSE_DOOR.y) return "house_door";
-	return "house_wall";
+function ground(t: number, x: number, y: number, now: number): string {
+	if (t === T.water) return water(x, y, now);
+	return frameFor(GROUND.has(t) ? t : T.grass, x, y).frame;
 }
 
-/** Texture keys to stamp, bottom to top, for one tile */
+// The house: a roof row, then wall rows, the bottom one on a stone footing with the door; ends are trimmed
+function house(inst: TInstance, x: number, y: number, now: number): string {
+	const is = (dx: number, dy: number) => terrainAt(inst, x + dx, y + dy, now) === T.house;
+	const end = !is(-1, 0) ? "l" : !is(1, 0) ? "r" : "m";
+	if (!is(0, -1)) return TILES.houseRoof[end].frame;
+	if (x === HOUSE_DOOR.x && y === HOUSE_DOOR.y) return TILES.houseDoor.frame;
+	return (is(0, 1) ? TILES.houseWall : TILES.houseBase)[end].frame;
+}
+
+function fence(vertical: boolean): string {
+	return (vertical ? TILES.fenceV : TILES.fenceH).frame;
+}
+
+/** Tile frames (all in the "tiles" atlas) to stamp, bottom to top, for one tile */
 export function tileLayers(inst: TInstance, x: number, y: number, now: number): string[] {
 	const { cx, cy } = chunkOf(x, y);
 	if (inst.kind === "land" && !inst.unlocked.has(chunkKey(cx, cy))) {
 		// Locked: the land that is there, dimmed, fenced where it meets open land
 		const base = landBaseTerrain(inst.seed, x, y);
-		const out = [GROUND[base] ?? grass(x, y)];
-		if (base === T.tree) out.push("tree");
-		else if (base === T.rock) out.push("rock");
-		out.push("dim");
+		const out = [ground(base, x, y, now)];
+		if (OVERLAY.has(base)) out.push(frameFor(base, x, y).frame);
+		out.push(TILES.dim.frame);
 		const lx = mod(x, CHUNK);
 		const ly = mod(y, CHUNK);
 		const open = (dx: number, dy: number) => inst.unlocked.has(chunkKey(cx + dx, cy + dy));
-		if ((lx === 0 && open(-1, 0)) || (lx === CHUNK - 1 && open(1, 0)) || (ly === 0 && open(0, -1)) || (ly === CHUNK - 1 && open(0, 1)))
-			out.push("fence");
+		if ((lx === 0 && open(-1, 0)) || (lx === CHUNK - 1 && open(1, 0))) out.push(fence(true));
+		else if ((ly === 0 && open(0, -1)) || (ly === CHUNK - 1 && open(0, 1))) out.push(fence(false));
 		return out;
 	}
 	const terrain = terrainAt(inst, x, y, now);
 	const tile = inst.tiles.get(tileKey(x, y));
 	if (terrain === T.house) return [house(inst, x, y, now)];
+	if (terrain === T.roof) return [(terrainAt(inst, x, y - 1, now) === T.roof ? TILES.roof : TILES.roofRidge).frame];
 	if (terrain === T.field) {
-		if (tile?.regrowAt !== undefined && now < tile.regrowAt) return ["tilled"];
-		return [`field:${fieldCrop(x, y) ?? "wheat"}`];
+		if (tile?.regrowAt !== undefined && now < tile.regrowAt) return [TILES.tilled.frame];
+		return [FIELD_FRAMES[fieldCrop(x, y) ?? "wheat"]!.frame];
 	}
-	const out = [GROUND[terrain] ?? grass(x, y)];
+	const out = [ground(terrain, x, y, now)];
 	if (tile?.tilled) {
 		const { day } = clock(inst.epoch, now);
-		out.push(tile.wateredDays.includes(day) ? "watered" : "tilled");
+		out.push((tile.wateredDays.includes(day) ? TILES.watered : TILES.tilled).frame);
 		const stage = cropStage(tile, day);
-		if (stage) out.push(stage.ready ? `ripe:${stage.crop.id}` : stage.grown === 0 ? "seedling" : "sprout");
+		const frames = stage && CROP_FRAMES[stage.crop.id];
+		if (stage && frames) out.push(frames[Math.min(stage.grown, frames.length - 1)]!.frame);
 	}
-	if (terrain === T.tree) out.push("tree");
-	else if (terrain === T.rock) out.push("rock");
-	else if (terrain === T.portal) out.push("portal");
-	else if (terrain === T.fence) out.push("fence");
+	if (OVERLAY.has(terrain)) out.push(frameFor(terrain, x, y).frame);
+	else if (terrain === T.fence) {
+		const f = (dx: number, dy: number) => terrainAt(inst, x + dx, y + dy, now) === T.fence;
+		out.push(fence((f(0, -1) || f(0, 1)) && !f(-1, 0) && !f(1, 0)));
+	}
 	return out;
 }
+
+/** True when a tile shows water, so its chunk is redrawn as the shimmer moves on */
+export const hasWater = (layers: string[]) => layers.some((l) => l.startsWith("water_"));

@@ -217,9 +217,19 @@
 	border-color: var(--gold);
 	background: rgba(242, 193, 78, 0.18);
 }
+/* Item icons are a frame of the items atlas (see itemIcon in dom.ts); unknown items fall back to text */
+.ui .item-icon {
+	display: inline-block;
+	background-repeat: no-repeat;
+	vertical-align: middle;
+}
 .ui .slot-icon {
+	display: block;
+	width: 34px;
+	height: 34px;
+	margin: 3px auto 0;
 	font-size: 22px;
-	line-height: 40px;
+	line-height: 34px;
 }
 .ui .slot-key {
 	position: absolute;
@@ -227,13 +237,6 @@
 	left: 3px;
 	font-size: 10px;
 	color: var(--muted);
-}
-.ui .slot-seed {
-	position: absolute;
-	left: 2px;
-	bottom: 1px;
-	font-size: 10px;
-	line-height: 1;
 }
 .ui .slot-count {
 	position: absolute;
@@ -351,6 +354,8 @@
 	min-width: 0;
 }
 .ui .row-icon {
+	width: 24px;
+	height: 24px;
 	font-size: 18px;
 }
 .ui .row-price {
@@ -398,6 +403,8 @@
 	border-color: var(--gold);
 }
 .ui .inv-icon {
+	width: 36px;
+	height: 36px;
 	font-size: 24px;
 }
 .ui .inv-name {

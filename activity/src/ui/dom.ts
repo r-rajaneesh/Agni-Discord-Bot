@@ -1,5 +1,7 @@
 // Small DOM helpers for the overlays. Text always goes in through textContent, never innerHTML.
 import { ITEMS } from "@game/data/items";
+import itemsAtlas from "../../public/assets/items.json";
+import { ITEM_FRAMES } from "../assets/manifest";
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
 	const e = document.createElement(tag);
@@ -43,9 +45,21 @@ export class Panel {
 	}
 }
 
-/** Emoji for an item; seeds show the crop they grow, since every seed bag is 🌱 */
-export function itemIcon(id: string): string {
-	const def = ITEMS[id];
-	if (!def) return "❔";
-	return (def.cropId && ITEMS[def.cropId]?.emoji) || def.emoji;
+type TAtlasJson = { frames: Record<string, { frame: { x: number; y: number; w: number; h: number } }>; meta: { size: { w: number; h: number } } };
+const SHEET = itemsAtlas as TAtlasJson;
+
+/**
+ * An item's icon from the items atlas, as a span whose background is that frame. Percentages keep it right at
+ * any size the CSS gives the span. An unknown item shows ❔.
+ */
+export function itemIcon(id: string, cls: string): HTMLSpanElement {
+	const f = ITEMS[id] ? SHEET.frames[ITEM_FRAMES[id]!.frame]?.frame : undefined;
+	if (!f) return el("span", cls, "❔");
+	const { w, h } = SHEET.meta.size;
+	const s = el("span", `${cls} item-icon`);
+	s.style.backgroundImage = "url(assets/items.png)";
+	s.style.backgroundSize = `${(w / f.w) * 100}% ${(h / f.h) * 100}%`;
+	s.style.backgroundPosition = `${(f.x / (w - f.w)) * 100}% ${(f.y / (h - f.h)) * 100}%`;
+	s.setAttribute("aria-hidden", "true");
+	return s;
 }

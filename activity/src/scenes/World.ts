@@ -2,9 +2,11 @@
 import Phaser from "phaser";
 import { EMOTES } from "@game/data/emotes";
 import { clock, darkness } from "@game/engine";
+import type { TDir } from "@game/protocol";
 import { INTERP_DELAY_MS, InterpBuffer } from "../interp";
 import type { ClientState, THints } from "../state";
-import { SCALE, TILE, animalTexture, registerTextures } from "../textures";
+import { ANIMAL_FRAMES, DRAW_SCALE, TILE } from "../assets/manifest";
+import { animalAnim } from "../textures";
 import { ChunkRenderer } from "./chunkRenderer";
 import { PlayerSprite } from "./playerSprite";
 
@@ -17,10 +19,16 @@ interface TOther {
 }
 
 interface TWild {
-	sprite: Phaser.GameObjects.Image;
+	sprite: Phaser.GameObjects.Sprite;
 	buf: InterpBuffer;
-	key: string;
+	kind: string;
+	facing: TDir;
+	walking: boolean;
+	lastMove: number;
 }
+
+// Still this long after the last move counts as standing
+const STILL_MS = 120;
 
 export class World extends Phaser.Scene {
 	private ready = false;
@@ -39,7 +47,6 @@ export class World extends Phaser.Scene {
 	}
 
 	create(): void {
-		registerTextures(this.textures);
 		this.chunks = new ChunkRenderer(this, this.state);
 		this.night = this.add
 			.rectangle(0, 0, this.scale.width, this.scale.height, NIGHT_COLOUR, 1)
@@ -83,18 +90,22 @@ export class World extends Phaser.Scene {
 	override update(): void {
 		const you = this.state.you;
 		const at = you && this.youAt();
+		const t = performance.now();
 		if (you && at && this.me) {
 			this.me.setView(you);
-			this.me.setPosition(at.x * TILE, at.y * TILE).setDepth(at.y);
+			this.me.walkTo(at.x * TILE, at.y * TILE, t);
 		}
-		const past = performance.now() - INTERP_DELAY_MS;
+		const past = t - INTERP_DELAY_MS;
 		for (const o of this.others.values()) {
 			const p = o.buf.sample(past);
-			if (p) o.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
+			if (p) o.sprite.walkTo(p.x * TILE, p.y * TILE, t);
 		}
 		for (const a of this.animals.values()) {
 			const p = a.buf.sample(past);
-			if (p) a.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
+			if (!p) continue;
+			if (Math.abs(p.x * TILE - a.sprite.x) > 0.01 || Math.abs(p.y * TILE - a.sprite.y) > 0.01) a.lastMove = t;
+			a.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
+			this.poseAnimal(a, t - a.lastMove < STILL_MS);
 		}
 		const inst = this.state.instance;
 		if (!inst) return;
@@ -115,7 +126,7 @@ export class World extends Phaser.Scene {
 		const you = this.state.you;
 		if (you) {
 			this.me = new PlayerSprite(this, you, true);
-			this.me.setPosition(you.x * TILE, you.y * TILE).setDepth(you.y);
+			this.me.place(you.x * TILE, you.y * TILE);
 			this.cameras.main.startFollow(this.me, true);
 			this.cameras.main.centerOn(this.me.x, this.me.y);
 		}
@@ -133,7 +144,7 @@ export class World extends Phaser.Scene {
 		}
 		if (!o) {
 			o = { sprite: new PlayerSprite(this, view, false), buf: new InterpBuffer() };
-			o.sprite.setPosition(view.x * TILE, view.y * TILE).setDepth(view.y);
+			o.sprite.place(view.x * TILE, view.y * TILE);
 			this.others.set(id, o);
 		} else o.sprite.setView(view);
 		o.buf.push(performance.now(), view.x, view.y);
@@ -148,14 +159,24 @@ export class World extends Phaser.Scene {
 			this.animals.delete(id);
 			return;
 		}
-		const key = animalTexture(this.textures, view.kind, view.facing);
+		// An unknown kind draws as a rabbit
+		const kind = ANIMAL_FRAMES[view.kind] ? view.kind : "rabbit";
 		if (!a) {
-			a = { sprite: this.add.image(view.x * TILE, view.y * TILE, key).setScale(SCALE).setDepth(view.y), buf: new InterpBuffer(), key };
+			const sprite = this.add.sprite(view.x * TILE, view.y * TILE, "animals", ANIMAL_FRAMES[kind]![view.facing][0]!.frame).setScale(DRAW_SCALE).setDepth(view.y);
+			a = { sprite, buf: new InterpBuffer(), kind, facing: view.facing, walking: false, lastMove: 0 };
 			this.animals.set(id, a);
-		} else if (a.key !== key) {
-			a.sprite.setTexture(key);
-			a.key = key;
+		} else if (a.facing !== view.facing) {
+			a.facing = view.facing;
+			this.poseAnimal(a, a.walking, true);
 		}
 		a.buf.push(performance.now(), view.x, view.y);
+	}
+
+	// The walk animation for the animal's facing, or its standing frame
+	private poseAnimal(a: TWild, walking: boolean, force = false): void {
+		if (walking === a.walking && !force) return;
+		a.walking = walking;
+		if (walking) a.sprite.play(animalAnim(a.kind, a.facing), true);
+		else a.sprite.stop().setFrame(ANIMAL_FRAMES[a.kind]![a.facing][0]!.frame);
 	}
 }

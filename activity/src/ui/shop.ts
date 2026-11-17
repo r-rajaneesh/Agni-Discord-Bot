@@ -18,7 +18,7 @@ export class ShopPanel extends Panel {
 		const row = (id: string, price: string, ...actions: HTMLButtonElement[]) => {
 			const r = el("div", "row");
 			const name = el("span", "row-name");
-			name.append(el("span", "row-icon", itemIcon(id)), el("span", "", ITEMS[id]?.name ?? id));
+			name.append(itemIcon(id, "row-icon"), el("span", "", ITEMS[id]?.name ?? id));
 			const acts = el("span", "row-actions");
 			acts.append(...actions);
 			r.append(name, el("span", "row-price", price), acts);

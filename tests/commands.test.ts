@@ -124,7 +124,7 @@ describe("shop energy refill", () => {
 describe("shop", () => {
 	test("sells no gems", async () => {
 		const { PRODUCTS } = await import("../game/data/products");
-		expect(PRODUCTS.map((p) => p.id)).toEqual(["farm_pass"]);
-		expect(PRODUCTS.every((p) => p.kind === "pass")).toBe(true);
+		expect(PRODUCTS.map((p) => p.id)).toEqual(["farm_pass", "emotes_party_pack"]);
+		expect(PRODUCTS.map((p) => p.kind)).toEqual(["pass", "cosmetic"]);
 	});
 });

@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import { sanitizeChat } from "../game/chat";
 import { chunkOf, dropLand } from "../game/chunks";
 import { ITEMS, STARTER_COINS, STARTER_KIT } from "../game/data/items";
 import { MAX_ENERGY, TICK_MS, currentEnergy, enter, simulate, type TDir, type TInstance, type TPlayerState } from "../game/engine";
@@ -17,8 +18,10 @@ import type EconomyManager from "./EconomyManager";
 import { landIdOf, type TLocation, type TStoredPlayer } from "./InstanceStore";
 import type InstanceStore from "./InstanceStore";
 import type PaymentManager from "./PaymentManager";
+import { ownedItems } from "./models/Cosmetics";
 import { chat, type TChatCtx } from "./game/chat";
-import { action, dailyGems, isAction, strike, type TActionCtx } from "./game/actions";
+import { action, dailyGems, strike, type TActionCtx } from "./game/actions";
+import { buyCosmetic, emote, ownedMsg } from "./game/cosmetics";
 import Wildlife from "./game/animals";
 import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
 import Lobbies, { LOBBY_CAP } from "./game/lobbies";
@@ -82,6 +85,11 @@ export interface TSession {
 	globalMutedUntil: number;
 	lastChatAt: number;
 	lastGlobalAt: number;
+	/** Premium cosmetics this player owns (free emotes are not listed) */
+	owned: Set<string>;
+	/** When the last emote played, and when its "Slow down." was last sent */
+	emoteAt: number;
+	emoteSlowedAt: number;
 }
 
 interface TConn {
@@ -165,6 +173,7 @@ export default class GameServer {
 			send: (ws, msg) => this.send(ws, msg),
 			toast: (s, msg, ok) => this.toast(s, msg, ok),
 			sessions: () => this.sessions.values(),
+			emote: (s, id) => emote(this.ctx, s, id),
 		};
 		if (deps.autoTick !== false) this.timer = setInterval(() => this.tick(), TICK_MS);
 	}
@@ -226,10 +235,24 @@ export default class GameServer {
 				return this.switchLobby(s, m.lobby);
 			case "chat":
 				return chat(this.chatCtx, s, m.text);
-			default:
-				if (isAction(m)) return action(this.ctx, s, m);
-				// Emotes and cosmetics arrive in later tasks
-				return this.toast(s, "Not available yet.", false);
+			case "emote":
+				return emote(this.ctx, s, m.id);
+			case "buyCosmetic":
+				return buyCosmetic(this.ctx, s, m.itemId, m.via);
+			case "use":
+			case "equip":
+			case "sleep":
+			case "travel":
+			case "buy":
+			case "sell":
+			case "unlock":
+			case "buyProduct":
+				return action(this.ctx, s, m);
+			default: {
+				// Every message type is handled above; a new one fails to compile here
+				const unhandled: never = m;
+				return unhandled;
+			}
 		}
 	}
 
@@ -303,6 +326,10 @@ export default class GameServer {
 			? { mutedIds: [...old.mutedIds], globalMutedUntil: old.globalMutedUntil }
 			: await this.deps.store.loadChatState(userId).catch(() => ({ mutedIds: [] as string[], globalMutedUntil: 0 }));
 		const premium = await this.deps.payments.hasPass(userId).catch(() => false);
+		const owned = await ownedItems(userId).catch((e: unknown) => {
+			this.deps.log.error("[GAME] loading cosmetics failed", e);
+			return [] as string[];
+		});
 		const prices = await this.prices();
 		const kind = old ? old.rt.inst.kind : (stored?.location.instanceKind ?? "land");
 		// Last await: nothing can unload the land before the player is placed
@@ -315,7 +342,8 @@ export default class GameServer {
 		const prev = src?.player ?? stored;
 		const base: Omit<TPlayerState, "x" | "y" | "facing"> = {
 			userId,
-			name: user.name,
+			// Sanitized once here, so chat, mutes and labels all see the same plain name
+			name: sanitizeChat(user.name) || "Player",
 			energy: prev?.energy ?? MAX_ENERGY,
 			lastEnergyAt: prev?.lastEnergyAt ?? this.now(),
 			equipped: prev?.equipped ?? "hoe",
@@ -353,6 +381,9 @@ export default class GameServer {
 			globalMutedUntil: muted.globalMutedUntil,
 			lastChatAt: -Infinity,
 			lastGlobalAt: -Infinity,
+			owned: new Set(owned),
+			emoteAt: -Infinity,
+			emoteSlowedAt: -Infinity,
 		};
 		conn.ws.data.userId = userId;
 		conn.state = "ready";
@@ -472,6 +503,7 @@ export default class GameServer {
 			prices,
 		};
 		this.send(s.ws, { t: "welcome", userId: s.userId, snapshot });
+		this.send(s.ws, ownedMsg(s));
 	}
 
 	/** Takes a session's player out of its instance */
@@ -660,6 +692,23 @@ export default class GameServer {
 			this.send(s.ws, { t: "wallet", coins: w.coins, gems: w.gems, inventory, energy: currentEnergy(s.player, this.now()) });
 		} catch (e) {
 			this.deps.log.error("[GAME] pushWallet failed", e);
+		}
+	}
+
+	/**
+	 * Sends an online player what they own after a purchase or refund. The stored items are merged in, never replacing the set,
+	 * so a gem buy finishing meanwhile isn't lost; a refund names what it took in `removed`.
+	 */
+	async pushOwned(userId: string, removed: string[] = []): Promise<void> {
+		try {
+			const items = await ownedItems(userId);
+			const s = this.sessions.get(userId);
+			if (!s) return;
+			for (const id of removed) if (!items.includes(id)) s.owned.delete(id);
+			for (const id of items) s.owned.add(id);
+			this.send(s.ws, ownedMsg(s));
+		} catch (e) {
+			this.deps.log.error("[GAME] pushOwned failed", e);
 		}
 	}
 

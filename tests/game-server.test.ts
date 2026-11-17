@@ -5,16 +5,20 @@ import { CHUNK, LAND_PORTAL, LAND_SPAWN, cachedChunkCount, chunkOf } from "../ga
 import { DAY_MS, HOUSE_DOOR, MAX_ENERGY, ROCK_REGROW_MS, TICK_MS, TREE_REGROW_MS, WALK_SPEED, enter, use, type TDir, type TInstance } from "../game/engine";
 import * as entities from "../game/entities";
 import { T } from "../game/map";
+import { FREE_EMOTES } from "../game/data/emotes";
 import type { TServerMsg } from "../game/protocol";
 import { LAND_GATE, SHOP_DOORS, TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from "../game/world";
 import EconomyManager from "../managers/EconomyManager";
 import GameServer, { LOBBY_CAP, type TGameServerDeps } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
+import PaymentManager from "../managers/PaymentManager";
+import { productById } from "../game/data/products";
 import { Earning, Inventory, LedgerEntry, MarketItem, Order, Wallet } from "../managers/models/Economy";
+import { Ownership } from "../managers/models/Cosmetics";
 import { ChatLog, Land, LandTile, PlayerState } from "../managers/models/Game";
 
 let replset: MongoMemoryReplSet;
-const models = [Wallet, Inventory, LedgerEntry, MarketItem, Order, Earning, Land, LandTile, PlayerState, ChatLog] as unknown as mongoose.Model<any>[];
+const models = [Wallet, Inventory, LedgerEntry, MarketItem, Order, Earning, Land, LandTile, PlayerState, ChatLog, Ownership] as unknown as mongoose.Model<any>[];
 setDefaultTimeout(60_000);
 
 beforeAll(async () => {
@@ -220,9 +224,9 @@ describe("sessions", () => {
 	test("closes socket after repeated garbage", async () => {
 		const gs = server();
 		const ws = await join(gs, "u1");
-		// Messages for later tasks get a toast and are not counted as invalid
+		// Valid but refused messages (here rate-limited emotes) are not counted as invalid
 		for (let i = 0; i < 25; i++) await gs.message(ws as any, raw({ t: "emote", id: "wave" }));
-		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Not available yet.", ok: false });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Slow down.", ok: false });
 		for (let i = 0; i < 19; i++) await gs.message(ws as any, i % 2 ? "not json" : raw({ t: "buy", item: "wood", qty: -5 }));
 		expect(ws.close).not.toHaveBeenCalled();
 		await gs.message(ws as any, raw({ t: "nope" }));
@@ -1223,6 +1227,21 @@ describe("chat", () => {
 		expect(chats(b)).toHaveLength(2);
 	});
 
+	test("a mistyped command doesn't use up the chat slot", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await say(gs, a, "/x hi");
+		expect(toasts(a).at(-1)!.msg).toBe("Unknown command. Use /g, /p, /e, /mute or /unmute.");
+		await say(gs, a, "hi");
+		expect(chats(b)).toHaveLength(1);
+	});
+
+	test("display names are sanitized once when the session starts", async () => {
+		const gs = server(store, { auth: { ...auth, verify: async () => ({ id: "n", name: "Bad\u202Ename\u0000\u200F" }) } });
+		const ws = await join(gs, "n");
+		expect(welcome(ws).you.name).toBe("Badname");
+	});
+
 	test("global rate limit 1 per 5 s", async () => {
 		const gs = server();
 		const [a, b] = await trio(gs);
@@ -1308,5 +1327,190 @@ describe("chat", () => {
 		]);
 		const idx = await ChatLog.collection.indexes();
 		expect(idx.find((i) => i.key.at === 1)?.expireAfterSeconds).toBe(30 * 86400);
+	});
+});
+
+describe("emotes", () => {
+	const act = (gs: GameServer, ws: TSock, m: unknown) => gs.message(ws as any, raw(m));
+	const emotes = (ws: TSock) => sent(ws).filter((m) => m.t === "emote");
+	const toasts = (ws: TSock) => sent(ws).filter((m) => m.t === "toast") as Extract<TServerMsg, { t: "toast" }>[];
+	const gems = async (userId: string) => (await eco.wallet(userId)).gems;
+
+	// a and b share an AOI; c is one chunk past it
+	async function trio(gs: GameServer) {
+		await seedWorld("a", 0.5, -0.5);
+		await seedWorld("b", 3.5, -0.5);
+		await seedWorld("c", 3 * CHUNK + 0.5, -0.5);
+		return [await join(gs, "a"), await join(gs, "b"), await join(gs, "c")] as const;
+	}
+
+	test("owned follows every welcome with the free emotes first", async () => {
+		await Ownership.create({ userId: "a", itemId: "moonwalk", source: "gems" });
+		const gs = server();
+		const ws = await join(gs, "a");
+		const all = sent(ws).map((m) => m.t);
+		expect(all[all.indexOf("welcome") + 1]).toBe("owned");
+		expect(last(ws, "owned")!.items).toEqual([...FREE_EMOTES, "moonwalk"]);
+	});
+
+	test("emote broadcasts to AOI only", async () => {
+		const gs = server();
+		const [a, b, c] = await trio(gs);
+		await act(gs, a, { t: "emote", id: "wave" });
+		for (const ws of [a, b]) expect(emotes(ws)).toEqual([{ t: "emote", userId: "a", id: "wave" }]);
+		expect(emotes(c)).toEqual([]);
+		// Through chat too
+		clock += 2000;
+		await act(gs, b, { t: "chat", text: "/e clap" });
+		expect(emotes(a).at(-1)).toEqual({ t: "emote", userId: "b", id: "clap" });
+		clock += 2000;
+		await act(gs, b, { t: "chat", text: "/e nope" });
+		expect(toasts(b).at(-1)).toMatchObject({ msg: "Unknown emote.", ok: false });
+		expect(emotes(a)).toHaveLength(2);
+	});
+
+	test('locked premium emote is rejected with toast "Unlock this emote first."', async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await act(gs, a, { t: "emote", id: "breakdance" });
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "Unlock this emote first.", ok: false });
+		expect(emotes(a)).toEqual([]);
+		expect(emotes(b)).toEqual([]);
+	});
+
+	test("emote rate limit 1 per 2 s", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		// Its own limiter: a full action budget doesn't block it
+		for (let i = 0; i < 6; i++) await act(gs, a, { t: "equip", item: "hoe" });
+		await act(gs, a, { t: "emote", id: "wave" });
+		expect(emotes(b)).toHaveLength(1);
+		clock += 500;
+		await act(gs, a, { t: "emote", id: "nod" });
+		clock += 500;
+		await act(gs, a, { t: "emote", id: "nod" });
+		clock += 999;
+		await act(gs, a, { t: "emote", id: "nod" });
+		expect(emotes(b)).toHaveLength(1);
+		// "Slow down." at most once a second
+		expect(toasts(a).filter((t) => t.msg === "Slow down.")).toHaveLength(2);
+		clock += 1;
+		await act(gs, a, { t: "emote", id: "nod" });
+		expect(emotes(b)).toHaveLength(2);
+	});
+
+	test("buyCosmetic via gems debits gems once and sends owned", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await eco.transact([{ userId: "a", gems: 200 }], { reason: "test" });
+		const before = await gems("a");
+		await Promise.all([act(gs, a, { t: "buyCosmetic", itemId: "moonwalk", via: "gems" }), act(gs, a, { t: "buyCosmetic", itemId: "moonwalk", via: "gems" })]);
+		expect(await gems("a")).toBe(before - 150);
+		expect(await LedgerEntry.countDocuments({ idempotencyKey: "cosmetic:a:moonwalk" })).toBe(1);
+		expect(await Ownership.find({ userId: "a" }).lean()).toMatchObject([{ itemId: "moonwalk", source: "gems" }]);
+		expect(last(a, "owned")!.items).toContain("moonwalk");
+		expect(last(a, "wallet")!.gems).toBe(before - 150);
+		// Unlocked live
+		await act(gs, a, { t: "emote", id: "moonwalk" });
+		expect(emotes(b)).toEqual([{ t: "emote", userId: "a", id: "moonwalk" }]);
+		// A third buy is refused without a debit
+		await act(gs, a, { t: "buyCosmetic", itemId: "moonwalk", via: "gems" });
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "You already own this.", ok: false });
+		expect(await gems("a")).toBe(before - 150);
+		// Free emotes and unknown ids are not for sale
+		await act(gs, a, { t: "buyCosmetic", itemId: "wave", via: "gems" });
+		expect(toasts(a).at(-1)!.msg).toBe("You already own this.");
+		await act(gs, a, { t: "buyCosmetic", itemId: "nope", via: "gems" });
+		expect(toasts(a).at(-1)!.msg).toBe("Unknown emote.");
+	});
+
+	test("buyCosmetic via gems fails cleanly when gems are short", async () => {
+		const gs = server();
+		const [a] = await trio(gs);
+		expect(await gems("a")).toBeLessThan(200);
+		const before = await gems("a");
+		await act(gs, a, { t: "buyCosmetic", itemId: "fireworks", via: "gems" });
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "Not enough gems.", ok: false });
+		expect(await gems("a")).toBe(before);
+		expect(await Ownership.countDocuments({})).toBe(0);
+		expect(last(a, "owned")!.items).not.toContain("fireworks");
+	});
+
+	test("buyCosmetic via razorpay DMs the pack link", async () => {
+		const links: string[] = [];
+		const dms: string[] = [];
+		const gs = server(store, {
+			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+			dm: async (_u, content) => void dms.push(content),
+		});
+		const [a] = await trio(gs);
+		await act(gs, a, { t: "buyCosmetic", itemId: "breakdance", via: "razorpay" });
+		expect(links).toEqual(["emotes_party_pack"]);
+		expect(dms[0]).toContain("https://rzp.io/l/pack");
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "Check your DMs to pay.", ok: true });
+		// Not in any pack
+		await act(gs, a, { t: "buyCosmetic", itemId: "flex", via: "razorpay" });
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "This emote is only available for gems.", ok: false });
+		// The pack is a product too
+		clock += 30_000;
+		await act(gs, a, { t: "buyProduct", productId: "emotes_party_pack" });
+		expect(links).toEqual(["emotes_party_pack", "emotes_party_pack"]);
+	});
+
+	test("refused emotes count toward the emote limiter", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await act(gs, a, { t: "emote", id: "breakdance" });
+		await act(gs, a, { t: "emote", id: "wave" });
+		expect(toasts(a).at(-1)!.msg).toBe("Slow down.");
+		expect(emotes(b)).toEqual([]);
+		clock += 2000;
+		await act(gs, a, { t: "emote", id: "wave" });
+		expect(emotes(b)).toHaveLength(1);
+	});
+
+	test("buyProduct refuses a pack whose every emote is owned", async () => {
+		const links: string[] = [];
+		for (const itemId of productById("emotes_party_pack")!.items!) await Ownership.create({ userId: "a", itemId, source: "gems" });
+		const gs = server(store, {
+			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+		});
+		const [a] = await trio(gs);
+		await act(gs, a, { t: "buyProduct", productId: "emotes_party_pack" });
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "You already own everything in this pack.", ok: false });
+		await act(gs, a, { t: "buyCosmetic", itemId: "spin", via: "razorpay" });
+		expect(toasts(a).at(-1)!.msg).toBe("You already own this.");
+		expect(links).toEqual([]);
+	});
+
+	test("a gem buy racing a pack grant keeps the gems-paid emote after the pack refund", async () => {
+		const gs = server();
+		const [a] = await trio(gs);
+		await eco.transact([{ userId: "a", gems: 200 }], { reason: "test" });
+		const before = await gems("a");
+		const pack = productById("emotes_party_pack")!;
+		const noop = () => {};
+		const pm = new PaymentManager({ gameServer: gs, log: { info: noop, warn: noop, error: noop } } as any);
+		// The pack lands after the wheel showed moonwalk locked, and before the gem buy reaches the database
+		await pm.grant("a", pack, "razorpay:pay_race");
+		await act(gs, a, { t: "buyCosmetic", itemId: "moonwalk", via: "gems" });
+		expect(await gems("a")).toBe(before - 150);
+		expect(toasts(a).at(-1)!.msg).toBe("🌙 Unlocked Moonwalk!");
+		expect(await Ownership.findOne({ userId: "a", itemId: "moonwalk" }).lean()).toMatchObject({ source: "gems" });
+		await pm.revoke("a", pack, "razorpay:pay_race");
+		expect((await Ownership.find({ userId: "a" }).lean()).map((o) => o.itemId)).toEqual(["moonwalk"]);
+		// The live session drops the refunded emotes and keeps the paid one
+		expect(last(a, "owned")!.items).toEqual([...FREE_EMOTES, "moonwalk"]);
+	});
+
+	test("pushOwned sends a live session what it owns now", async () => {
+		const gs = server();
+		const [a] = await trio(gs);
+		await Ownership.create({ userId: "a", itemId: "spin", source: "razorpay", sourceKey: "razorpay:pay_1:spin" });
+		await gs.pushOwned("a");
+		expect(last(a, "owned")!.items).toEqual([...FREE_EMOTES, "spin"]);
+		await act(gs, a, { t: "emote", id: "spin" });
+		expect(emotes(a)).toHaveLength(1);
+		await gs.pushOwned("offline");
 	});
 });

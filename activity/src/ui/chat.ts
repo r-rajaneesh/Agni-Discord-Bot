@@ -9,25 +9,11 @@ export type TChatMsg = Extract<TServerMsg, { t: "chat" }>;
 
 const TAG: Record<TChatChannel, string> = { local: "", private: "[P] ", global: "[G] " };
 
-/** The newest `max` messages */
-export class ChatBuffer {
-	readonly msgs: TChatMsg[] = [];
-
-	constructor(private max = CHAT_KEEP) {}
-
-	add(m: TChatMsg): void {
-		this.msgs.push(m);
-		if (this.msgs.length > this.max) this.msgs.splice(0, this.msgs.length - this.max);
-	}
-}
-
 export class ChatPanel {
 	readonly root = el("div", "chat");
-	private buffer = new ChatBuffer();
 	private log = el("div", "chat-log");
 	private toggle: HTMLButtonElement;
 	private input: HTMLInputElement;
-	private unread = false;
 	// Phones have no Enter key to open the input, so it stays visible while the box is open
 	private touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
@@ -74,22 +60,17 @@ export class ChatPanel {
 	}
 
 	add(m: TChatMsg): void {
-		this.buffer.add(m);
 		const line = el("div", `chat-line chat-${m.channel}`);
 		line.append(el("span", "chat-from", `${TAG[m.channel]}${m.from.name}: `), el("span", "chat-text", m.text));
 		this.log.append(line);
 		while (this.log.children.length > CHAT_KEEP) this.log.firstElementChild!.remove();
 		this.log.scrollTop = this.log.scrollHeight;
-		if (this.root.classList.contains("chat-collapsed")) {
-			this.unread = true;
-			this.toggle.classList.add("chat-unread");
-		}
+		if (this.root.classList.contains("chat-collapsed")) this.toggle.classList.add("chat-unread");
 	}
 
 	private setOpen(open: boolean): void {
 		this.root.classList.toggle("chat-collapsed", !open);
 		if (open) {
-			this.unread = false;
 			this.toggle.classList.remove("chat-unread");
 			this.input.hidden = !this.touch;
 			this.log.scrollTop = this.log.scrollHeight;

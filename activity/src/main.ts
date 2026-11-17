@@ -84,6 +84,7 @@ async function main(): Promise<void> {
 					close: () => gameUi.close(),
 					lobbies: () => gameUi.toggleLobbies(),
 					chat: () => gameUi.focusChat(),
+					emotes: () => gameUi.toggleEmotes(),
 				},
 				gameUi.root,
 			);
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
 		handle: (hints, m) => {
 			world?.handle(hints);
 			if (m.t === "chat" && m.channel === "local") world?.say(m.from.userId, m.text);
+			if (m.t === "emote") world?.emote(m.userId, m.id);
 			ui?.message(m);
 		},
 		// Final: GameClient ignores everything after this, so nothing can restart the game over this screen

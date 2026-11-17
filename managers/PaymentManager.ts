@@ -3,10 +3,15 @@ import mongoose from "mongoose";
 import Razorpay from "razorpay";
 import { productById, productBySku, type TProduct } from "../game/data/products";
 import type ClientManager from "./ClientManager";
+import { Ownership, own, ownedItems } from "./models/Cosmetics";
 import { Purchase, Subscription } from "./models/Economy";
 
 const DAY_MS = 86_400_000;
 const LINK_TTL_MS = 30 * 60 * 1000;
+
+/** The grant key of a paid purchase, as grant() was given it */
+const purchaseKey = (p: { provider: string; paymentId?: string | null; externalId?: string | null }) =>
+	p.provider === "razorpay" ? (p.paymentId ? `razorpay:${p.paymentId}` : null) : p.externalId ? `discord:${p.externalId}` : null;
 
 /**
  * Real-money purchases from Discord Premium Apps and Razorpay.
@@ -31,6 +36,7 @@ export default class PaymentManager {
 	// ---------- grant / revoke ----------
 
 	public async grant(userId: string, product: TProduct, sourceKey: string, endsAt?: Date | null) {
+		if (product.kind === "cosmetic") return this.grantCosmetic(userId, product, sourceKey);
 		// Pass: stack on top of any active pass so renewals never lose days
 		const existing = await Subscription.findOne({ sourceId: sourceKey }).lean();
 		if (existing) return { ok: true as const, duplicate: true };
@@ -52,8 +58,37 @@ export default class PaymentManager {
 		return { ok: true as const };
 	}
 
-	/** Refund/chargeback: ends the pass */
+	/**
+	 * One Ownership row per item, keyed `<sourceKey>:<itemId>`. An item the player already owns (say, bought with gems) is left as it is.
+	 * `duplicate`: a replay, this purchase's rows are already there. `empty`: a real payment that added nothing, as every item was owned.
+	 */
+	private async grantCosmetic(userId: string, product: TProduct, sourceKey: string): Promise<{ ok: true; duplicate?: boolean; empty?: boolean }> {
+		const keys = (product.items ?? []).map((id) => `${sourceKey}:${id}`);
+		let added = 0;
+		for (const itemId of product.items ?? []) if (await own(userId, itemId, "razorpay", `${sourceKey}:${itemId}`)) added++;
+		if (added > 0) return { ok: true };
+		return (await Ownership.exists({ userId, sourceKey: { $in: keys } })) ? { ok: true, duplicate: true } : { ok: true, empty: true };
+	}
+
+	/** Refund/chargeback: ends the pass, or removes the cosmetics this purchase granted (and nothing owned another way) */
 	public async revoke(userId: string, product: TProduct, sourceKey: string) {
+		if (product.kind === "cosmetic") {
+			const items = product.items ?? [];
+			await Ownership.deleteMany({ userId, sourceKey: { $in: items.map((id) => `${sourceKey}:${id}`) } });
+			// Another paid purchase of the same pack still entitles the player to its items: its rows were never written
+			// while this purchase held them (one row per player and item), so they are written now
+			const others = await Purchase.find({ userId, productId: product.id, status: "paid" }).lean();
+			for (const p of others) {
+				const key = purchaseKey(p);
+				if (key && key !== sourceKey) await this.grantCosmetic(userId, product, key);
+			}
+			const still = new Set(await ownedItems(userId));
+			await this.client.gameServer?.pushOwned(
+				userId,
+				items.filter((id) => !still.has(id)),
+			);
+			return;
+		}
 		await Subscription.updateOne({ sourceId: sourceKey }, { $set: { active: false } });
 	}
 
@@ -64,6 +99,29 @@ export default class PaymentManager {
 			active: true,
 			$or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
 		}));
+	}
+
+	// Sends an open Activity session its wallet and what it owns
+	private async refresh(userId: string) {
+		await this.client.gameServer?.pushWallet(userId);
+		await this.client.gameServer?.pushOwned(userId);
+	}
+
+	/** A paid cosmetic purchase that added nothing: an honest receipt, and a warning so the owner refunds it */
+	private async alreadyOwned(userId: string, product: TProduct, provider: string, paymentRef: string) {
+		this.client.log.warn("[PAYMENT] Paid for a pack the player already fully owned; refund it", { userId, productId: product.id, provider, paymentRef });
+		const user = await this.client.users.fetch(userId).catch(() => null);
+		await user
+			?.send({
+				embeds: [
+					this.client.makeEmbed({
+						title: `${product.emoji} Payment received`,
+						description: `You already owned everything in **${product.name}**, so nothing new was added. This purchase will be refunded or credited to you (${provider}, ${paymentRef}).`,
+						color: this.client.config.colours.green,
+					}),
+				],
+			})
+			.catch(() => null);
 	}
 
 	private async notify(userId: string, product: TProduct, provider: string) {
@@ -142,14 +200,17 @@ export default class PaymentManager {
 				return 200;
 			}
 			const result = await this.grant(purchase.userId, product, `razorpay:${payment.id}`);
-			const fresh = result.ok && !("duplicate" in result && result.duplicate);
+			const empty = "empty" in result && !!result.empty;
+			const fresh = result.ok && !("duplicate" in result && result.duplicate) && !empty;
 			// Refreshes an open Activity session
-			if (fresh) await this.client.gameServer?.pushWallet(purchase.userId);
+			if (fresh) await this.refresh(purchase.userId);
 			const first = await Purchase.findOneAndUpdate(
 				{ _id: purchase._id, notified: false },
 				{ $set: { status: "paid", paymentId: payment.id, paidAt: new Date(), notified: true } },
 			);
+			// Purchase.notified dedupes replays, so the receipt and the warning go out once
 			if (first && fresh) await this.notify(purchase.userId, product, "Razorpay");
+			if (first && empty) await this.alreadyOwned(purchase.userId, product, "Razorpay", payment.id);
 			this.client.log.info("[PAYMENT] Razorpay grant", { userId: purchase.userId, productId: product.id, paymentId: payment.id });
 			return 200;
 		}
@@ -181,6 +242,7 @@ export default class PaymentManager {
 		const sourceKey = `discord:${entitlement.id}`;
 		if (deleted) {
 			await this.revoke(userId, product, sourceKey);
+			await Purchase.updateOne({ provider: "discord", externalId: entitlement.id }, { $set: { status: "refunded" } });
 			this.client.log.info("[PAYMENT] Discord entitlement revoked", { userId, sku: entitlement.skuId });
 			return;
 		}
@@ -196,13 +258,15 @@ export default class PaymentManager {
 		if (result.ok) {
 			// Consume after the grant is durable; if consume fails Discord redelivers and the grant is a no-op
 			await entitlement.consume().catch((e) => this.client.log.error("[PAYMENT] consume failed", e));
-			await Purchase.updateOne(
+			const recorded = await Purchase.updateOne(
 				{ provider: "discord", externalId: entitlement.id },
 				{ $setOnInsert: { userId, productId: product.id, status: "paid", paidAt: new Date(), notified: true } },
 				{ upsert: true },
 			);
-			if (!("duplicate" in result && result.duplicate)) {
-				await this.client.gameServer?.pushWallet(userId);
+			if ("empty" in result && result.empty) {
+				if (recorded.upsertedCount > 0) await this.alreadyOwned(userId, product, "Discord", entitlement.id);
+			} else if (!("duplicate" in result && result.duplicate)) {
+				await this.refresh(userId);
 				await this.notify(userId, product, "Discord");
 			}
 		}

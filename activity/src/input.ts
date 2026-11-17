@@ -15,6 +15,8 @@ export interface TInputActions {
 	lobbies(): void;
 	/** Enter: focus the chat box */
 	chat(): void;
+	/** T: the emote wheel */
+	emotes(): void;
 }
 
 const UP = new Set(["ArrowUp", "KeyW"]);
@@ -101,6 +103,7 @@ export class Input {
 		if (e.code === "KeyE" || e.code === "Space") a.use();
 		else if (e.code === "KeyI") a.inventory();
 		else if (e.code === "KeyL") a.lobbies();
+		else if (e.code === "KeyT") a.emotes();
 		else if (e.code === "Escape") a.close();
 		else if (e.code === "Enter") {
 			// A key held into the chat box must not keep walking after it

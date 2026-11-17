@@ -134,6 +134,14 @@ describe("ClientState.apply", () => {
 		expect(s.wallet).toEqual({ coins: 10, gems: 2, inventory: { wood: 3 }, energy: 80 });
 	});
 
+	test("owned replaces what you may use", () => {
+		const s = new ClientState();
+		expect(s.owned.size).toBe(0);
+		s.apply({ t: "owned", items: ["wave", "spin"] });
+		s.apply({ t: "owned", items: ["wave", "nod"] });
+		expect([...s.owned]).toEqual(["wave", "nod"]);
+	});
+
 	test("ents replaces the animals and hints every id added, moved or dropped", () => {
 		const s = new ClientState();
 		s.apply(worldWelcome());

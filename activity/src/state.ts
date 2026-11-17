@@ -51,6 +51,8 @@ export class ClientState {
 	animals = new Map<number, TAnimalView>();
 	wallet: TWallet = { coins: 0, gems: 0, inventory: {}, energy: 0 };
 	prices: Record<string, { buy: number; sell: number }> = {};
+	/** Emote ids you may use: the server sends the free ones too */
+	owned = new Set<string>();
 
 	apply(m: TServerMsg): THints {
 		switch (m.t) {
@@ -108,6 +110,9 @@ export class ClientState {
 			}
 			case "wallet":
 				this.wallet = { coins: m.coins, gems: m.gems, inventory: m.inventory, energy: m.energy };
+				return {};
+			case "owned":
+				this.owned = new Set(m.items);
 				return {};
 			default:
 				return {};

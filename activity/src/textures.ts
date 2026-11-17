@@ -218,6 +218,175 @@ export function playerTexture(textures: Phaser.Textures.TextureManager, colour: 
 	return key;
 }
 
+// Wild animals: a side view facing right (mirrored for left), a front view (down) and a back view (up)
+type TAnimalArt = { side: (px: TPx) => void; front: (px: TPx) => void; back: (px: TPx) => void };
+const SHADOW = "rgba(0,0,0,0.25)";
+const EYE = "#222";
+
+const ANIMAL_ART: Record<string, TAnimalArt> = {
+	rabbit: {
+		side: (px) => {
+			px(4, 14, 9, 1, SHADOW);
+			px(4, 9, 7, 5, "#d8d2c8");
+			px(10, 7, 4, 4, "#d8d2c8");
+			px(11, 3, 1, 4, "#d8d2c8");
+			px(12, 3, 1, 4, "#c4beb4");
+			px(3, 10, 2, 2, "#ffffff");
+			px(5, 13, 2, 1, "#b8b2a8");
+			px(9, 13, 2, 1, "#b8b2a8");
+			px(12, 8, 1, 1, EYE);
+			px(14, 9, 1, 1, "#e8a0a8");
+		},
+		front: (px) => {
+			px(4, 14, 8, 1, SHADOW);
+			px(5, 9, 6, 5, "#d8d2c8");
+			px(5, 6, 6, 4, "#d8d2c8");
+			px(5, 2, 2, 4, "#d8d2c8");
+			px(9, 2, 2, 4, "#d8d2c8");
+			px(6, 3, 1, 2, "#e8a0a8");
+			px(9, 3, 1, 2, "#e8a0a8");
+			px(6, 7, 1, 1, EYE);
+			px(9, 7, 1, 1, EYE);
+			px(7, 8, 2, 1, "#e8a0a8");
+		},
+		back: (px) => {
+			px(4, 14, 8, 1, SHADOW);
+			px(5, 9, 6, 5, "#d8d2c8");
+			px(5, 6, 6, 4, "#d8d2c8");
+			px(5, 2, 2, 4, "#d8d2c8");
+			px(9, 2, 2, 4, "#d8d2c8");
+			px(7, 11, 2, 2, "#ffffff");
+		},
+	},
+	deer: {
+		side: (px) => {
+			px(3, 15, 11, 1, SHADOW);
+			for (const x of [4, 6, 10, 12]) px(x, 11, 1, 4, "#6b4423");
+			px(3, 7, 10, 5, "#a86b3c");
+			px(4, 11, 8, 1, "#d9b38c");
+			px(5, 8, 1, 1, "#d9b38c");
+			px(8, 9, 1, 1, "#d9b38c");
+			px(11, 4, 2, 4, "#a86b3c");
+			px(12, 3, 3, 3, "#a86b3c");
+			px(15, 4, 1, 1, "#3d2a1e");
+			px(12, 0, 1, 3, "#e0d0b0");
+			px(14, 0, 1, 3, "#e0d0b0");
+			px(11, 1, 1, 1, "#e0d0b0");
+			px(2, 7, 1, 2, "#ffffff");
+			px(13, 4, 1, 1, EYE);
+		},
+		front: (px) => {
+			px(4, 15, 8, 1, SHADOW);
+			px(5, 11, 1, 4, "#6b4423");
+			px(10, 11, 1, 4, "#6b4423");
+			px(4, 7, 8, 5, "#a86b3c");
+			px(6, 9, 4, 3, "#d9b38c");
+			px(6, 3, 4, 4, "#a86b3c");
+			px(5, 0, 1, 3, "#e0d0b0");
+			px(10, 0, 1, 3, "#e0d0b0");
+			px(4, 1, 1, 1, "#e0d0b0");
+			px(11, 1, 1, 1, "#e0d0b0");
+			px(6, 4, 1, 1, EYE);
+			px(9, 4, 1, 1, EYE);
+			px(7, 6, 2, 1, "#3d2a1e");
+		},
+		back: (px) => {
+			px(4, 15, 8, 1, SHADOW);
+			px(5, 11, 1, 4, "#6b4423");
+			px(10, 11, 1, 4, "#6b4423");
+			px(4, 7, 8, 5, "#a86b3c");
+			px(6, 3, 4, 4, "#a86b3c");
+			px(5, 0, 1, 3, "#e0d0b0");
+			px(10, 0, 1, 3, "#e0d0b0");
+			px(4, 1, 1, 1, "#e0d0b0");
+			px(11, 1, 1, 1, "#e0d0b0");
+			px(7, 8, 2, 2, "#ffffff");
+		},
+	},
+	duck: {
+		side: (px) => {
+			px(3, 14, 9, 1, SHADOW);
+			px(3, 9, 9, 5, "#f4f1e8");
+			px(5, 10, 5, 2, "#c9c3b5");
+			px(2, 9, 2, 2, "#c9c3b5");
+			px(10, 5, 4, 4, "#2f8a4a");
+			px(10, 9, 3, 1, "#ffffff");
+			px(14, 7, 2, 1, "#f39c12");
+			px(6, 14, 2, 1, "#f39c12");
+			px(9, 14, 2, 1, "#f39c12");
+			px(12, 6, 1, 1, EYE);
+		},
+		front: (px) => {
+			px(4, 14, 8, 1, SHADOW);
+			px(4, 9, 8, 5, "#f4f1e8");
+			px(5, 5, 6, 4, "#2f8a4a");
+			px(5, 9, 6, 1, "#ffffff");
+			px(7, 8, 2, 2, "#f39c12");
+			px(6, 6, 1, 1, EYE);
+			px(9, 6, 1, 1, EYE);
+		},
+		back: (px) => {
+			px(4, 14, 8, 1, SHADOW);
+			px(4, 9, 8, 5, "#f4f1e8");
+			px(5, 10, 6, 3, "#c9c3b5");
+			px(5, 5, 6, 4, "#2f8a4a");
+		},
+	},
+	boar: {
+		side: (px) => {
+			px(3, 15, 11, 1, SHADOW);
+			px(4, 12, 2, 3, "#3d2a1e");
+			px(10, 12, 2, 3, "#3d2a1e");
+			px(3, 6, 10, 7, "#5b4030");
+			px(4, 5, 7, 1, "#3d2a1e");
+			px(12, 7, 3, 4, "#5b4030");
+			px(12, 6, 1, 1, "#3d2a1e");
+			px(15, 9, 1, 2, "#c98d7a");
+			px(14, 11, 1, 1, "#ffffff");
+			px(13, 8, 1, 1, EYE);
+		},
+		front: (px) => {
+			px(3, 15, 10, 1, SHADOW);
+			px(4, 13, 2, 2, "#3d2a1e");
+			px(10, 13, 2, 2, "#3d2a1e");
+			px(3, 6, 10, 7, "#5b4030");
+			px(5, 7, 6, 5, "#6e4e3a");
+			px(5, 6, 1, 1, "#3d2a1e");
+			px(10, 6, 1, 1, "#3d2a1e");
+			px(6, 10, 4, 2, "#c98d7a");
+			px(5, 11, 1, 1, "#ffffff");
+			px(10, 11, 1, 1, "#ffffff");
+			px(6, 8, 1, 1, EYE);
+			px(9, 8, 1, 1, EYE);
+		},
+		back: (px) => {
+			px(3, 15, 10, 1, SHADOW);
+			px(4, 13, 2, 2, "#3d2a1e");
+			px(10, 13, 2, 2, "#3d2a1e");
+			px(3, 6, 10, 7, "#5b4030");
+			px(4, 5, 8, 1, "#3d2a1e");
+			px(7, 7, 2, 1, "#3d2a1e");
+		},
+	},
+};
+
+/** Animal sprite for a kind and facing, made on first use; an unknown kind draws as a rabbit */
+export function animalTexture(textures: Phaser.Textures.TextureManager, kind: string, facing: TDir): string {
+	const art = ANIMAL_ART[kind] ?? ANIMAL_ART.rabbit!;
+	const key = `animal:${ANIMAL_ART[kind] ? kind : "rabbit"}:${facing}`;
+	if (!textures.exists(key))
+		textures.addCanvas(
+			key,
+			sprite((px) => {
+				if (facing === "d") art.front(px);
+				else if (facing === "u") art.back(px);
+				else if (facing === "r") art.side(px);
+				else art.side((x, y, w, h, c) => px(SRC - x - w, y, w, h, c));
+			}),
+		);
+	return key;
+}
+
 const GROUND: Record<number, string> = {
 	[T.path]: "path",
 	[T.water]: "water",

@@ -134,6 +134,29 @@ describe("ClientState.apply", () => {
 		expect(s.wallet).toEqual({ coins: 10, gems: 2, inventory: { wood: 3 }, energy: 80 });
 	});
 
+	test("ents replaces the animals and hints every id added, moved or dropped", () => {
+		const s = new ClientState();
+		s.apply(worldWelcome());
+		const hints = s.apply({ t: "ents", ents: [[1, "rabbit", 3.5, 4.5, "l"], [2, "deer", 6, 7, "d"]] });
+		expect(hints.animals?.sort()).toEqual([1, 2]);
+		expect(s.animals.get(1)).toEqual({ id: 1, kind: "rabbit", x: 3.5, y: 4.5, facing: "l" });
+		// 2 is missing from the next list, so it is dropped
+		const next = s.apply({ t: "ents", ents: [[1, "rabbit", 3, 4.5, "l"], [3, "duck", 1, 1, "u"]] });
+		expect(next.animals?.sort()).toEqual([1, 2, 3]);
+		expect([...s.animals.keys()].sort()).toEqual([1, 3]);
+		expect(s.animals.get(1)?.x).toBe(3);
+		expect(s.apply({ t: "ents", ents: [] }).animals?.sort()).toEqual([1, 3]);
+		expect(s.animals.size).toBe(0);
+	});
+
+	test("a welcome drops every animal", () => {
+		const s = new ClientState();
+		s.apply(worldWelcome());
+		s.apply({ t: "ents", ents: [[1, "rabbit", 3.5, 4.5, "l"]] });
+		expect(s.apply(worldWelcome()).reset).toBe(true);
+		expect(s.animals.size).toBe(0);
+	});
+
 	test("messages before the first welcome change nothing", () => {
 		const s = new ClientState();
 		expect(s.apply({ t: "tiles", tiles: [["1,1", null]] })).toEqual({});

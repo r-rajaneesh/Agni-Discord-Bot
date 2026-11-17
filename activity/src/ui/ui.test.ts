@@ -3,6 +3,7 @@ import { CHUNK, unlockPrice } from "@game/chunks";
 import { createLand, createLobby } from "@game/engine";
 import type { TDir, TPlayerView, TServerMsg } from "@game/protocol";
 import { ClientState } from "../state";
+import { ChatBuffer, CHAT_KEEP } from "./chat";
 import { hotbarItems } from "./hotbar";
 import { placeName } from "./hud";
 import { formatINR } from "./store";
@@ -55,4 +56,12 @@ describe("unlockTarget", () => {
 		expect(unlockTarget(at(edge, 8.5, "r", "bob"), 0)).toBeNull();
 		expect(unlockTarget(at(edge, 8.5, "r", "me", "world"), 0)).toBeNull();
 	});
+});
+
+test("chat keeps the newest 100 messages", () => {
+	const b = new ChatBuffer();
+	for (let i = 0; i < 130; i++) b.add({ t: "chat", channel: "local", from: { userId: "u", name: "u" }, text: String(i), at: i });
+	expect(b.msgs).toHaveLength(CHAT_KEEP);
+	expect(b.msgs[0]!.text).toBe("30");
+	expect(b.msgs.at(-1)!.text).toBe("129");
 });

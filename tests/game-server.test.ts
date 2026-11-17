@@ -11,10 +11,10 @@ import EconomyManager from "../managers/EconomyManager";
 import GameServer, { LOBBY_CAP, type TGameServerDeps } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
 import { Earning, Inventory, LedgerEntry, MarketItem, Order, Wallet } from "../managers/models/Economy";
-import { Land, LandTile, PlayerState } from "../managers/models/Game";
+import { ChatLog, Land, LandTile, PlayerState } from "../managers/models/Game";
 
 let replset: MongoMemoryReplSet;
-const models = [Wallet, Inventory, LedgerEntry, MarketItem, Order, Earning, Land, LandTile, PlayerState] as unknown as mongoose.Model<any>[];
+const models = [Wallet, Inventory, LedgerEntry, MarketItem, Order, Earning, Land, LandTile, PlayerState, ChatLog] as unknown as mongoose.Model<any>[];
 setDefaultTimeout(60_000);
 
 beforeAll(async () => {
@@ -1131,5 +1131,182 @@ describe("gems and energy", () => {
 		expect(await gs.hasPlayed("ghost")).toBe(false);
 		expect(await gs.refillEnergy("ghost")).toBe(false);
 		expect(await gs.hasPlayed("u1")).toBe(true);
+	});
+});
+
+describe("chat", () => {
+	const say = (gs: GameServer, ws: TSock, text: string) => gs.message(ws as any, raw({ t: "chat", text }));
+	const chats = (ws: TSock) => sent(ws).filter((m) => m.t === "chat") as Extract<TServerMsg, { t: "chat" }>[];
+	const toasts = (ws: TSock) => sent(ws).filter((m) => m.t === "toast") as Extract<TServerMsg, { t: "toast" }>[];
+
+	// a and b stand 3 tiles apart, c is 12 tiles away; all in lobby 1
+	async function trio(gs: GameServer) {
+		await seedWorld("a", 0.5, -0.5, 1);
+		await seedWorld("b", 3.5, -0.5, 1);
+		await seedWorld("c", 12.5, -0.5, 1);
+		return [await join(gs, "a"), await join(gs, "b"), await join(gs, "c")] as const;
+	}
+
+	test("local chat reaches only nearby players", async () => {
+		const gs = server();
+		const [a, b, c] = await trio(gs);
+		await say(gs, a, "hello");
+		const m = chats(b)[0]!;
+		expect(m).toMatchObject({ channel: "local", from: { userId: "a", name: "name-a" }, text: "hello", at: clock });
+		expect(chats(a)).toHaveLength(1);
+		expect(chats(c)).toHaveLength(0);
+	});
+
+	test("chat is plain text: control characters are stripped before sending", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await say(gs, a, "hi\u202E <b>x</b>\u0007");
+		expect(chats(b)[0]!.text).toBe("hi <b>x</b>");
+	});
+
+	test("private chat on private land reaches everyone on that land and nobody in the world", async () => {
+		const gs = server();
+		const w = await join(gs, "w"); // fresh player: starts on their own land
+		const x = await join(gs, "x");
+		const y = await join(gs, "y");
+		const z = await join(gs, "z");
+		// Put x on w's land (visiting is a later task); y and z stay on their own lands
+		const g = gs as any;
+		const land = g.sessions.get("w").rt;
+		const sx = g.sessions.get("x");
+		const { x: _x, y: _y, facing: _f, ...base } = sx.player;
+		g.leave(sx);
+		g.place(sx, land, base, undefined, {});
+		await say(gs, w, "/p psst");
+		expect(chats(w)).toHaveLength(1);
+		expect(chats(x)[0]).toMatchObject({ channel: "private", text: "psst" });
+		expect(chats(y)).toHaveLength(0);
+		expect(chats(z)).toHaveLength(0);
+	});
+
+	test("private chat in a lobby reaches the whole lobby and nobody on private lands or in other lobbies", async () => {
+		const gs = server();
+		await seedWorld("a", 0.5, -0.5, 1);
+		await seedWorld("b", 12.5, -0.5, 1);
+		await seedWorld("o", 0.5, -0.5);
+		const a = await join(gs, "a");
+		const b = await join(gs, "b");
+		const land = await join(gs, "land");
+		// Lobby 1 is full, so o lands in lobby 2
+		fill(gs.instance("lobby:1")!, LOBBY_CAP);
+		const o = await join(gs, "o");
+		expect(welcome(o).instance.id).toBe("lobby:2");
+		await say(gs, a, "/p everyone here");
+		expect(chats(a)).toHaveLength(1);
+		expect(chats(b)).toHaveLength(1);
+		expect(chats(land)).toHaveLength(0);
+		expect(chats(o)).toHaveLength(0);
+	});
+
+	test("global reaches all instances", async () => {
+		const gs = server();
+		const [a] = await trio(gs);
+		const land = await join(gs, "lander");
+		await say(gs, a, "/g everyone");
+		for (const ws of [a, land]) expect(chats(ws)[0]).toMatchObject({ channel: "global", text: "everyone" });
+	});
+
+	test("chat rate limit 1/s", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await say(gs, a, "one");
+		await say(gs, a, "two");
+		expect(chats(b)).toHaveLength(1);
+		expect(toasts(a).at(-1)).toMatchObject({ msg: "You're sending messages too fast.", ok: false });
+		clock += 1000;
+		await say(gs, a, "three");
+		expect(chats(b)).toHaveLength(2);
+	});
+
+	test("global rate limit 1 per 5 s", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await say(gs, a, "/g one");
+		clock += 1000;
+		await say(gs, a, "/g two");
+		expect(chats(b)).toHaveLength(1);
+		expect(toasts(a).at(-1)!.msg).toBe("Wait a few seconds before sending another global message.");
+		// Local chat is not held up by it
+		clock += 1000;
+		await say(gs, a, "local");
+		expect(chats(b)).toHaveLength(2);
+		clock += 3000;
+		await say(gs, a, "/g three");
+		expect(chats(b)).toHaveLength(3);
+	});
+
+	test("muted sender is hidden from the muter only", async () => {
+		const gs = server();
+		const [a, b, c] = await trio(gs);
+		await say(gs, b, "/mute NAME-A");
+		expect(toasts(b).at(-1)).toMatchObject({ msg: "Muted name-a.", ok: true });
+		await say(gs, a, "hi");
+		expect(chats(b)).toHaveLength(0);
+		expect(chats(a)).toHaveLength(1);
+		// The mute is saved
+		expect((await PlayerState.findOne({ userId: "b" }).lean())!.mutedIds).toEqual(["a"]);
+		clock += 1000;
+		await say(gs, b, "/unmute name-a");
+		clock += 1000;
+		await say(gs, a, "again");
+		expect(chats(b)).toHaveLength(1);
+		expect(chats(c)).toHaveLength(0);
+		await say(gs, b, "/mute nobody");
+		expect(toasts(b).at(-1)).toMatchObject({ ok: false });
+	});
+
+	test("/mute with two players of the same name asks for no one", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		const g = gs as any;
+		g.sessions.get("c").player.name = "name-b";
+		await say(gs, a, "/mute name-b");
+		expect(toasts(a).at(-1)).toMatchObject({ msg: "More than one player is named name-b.", ok: false });
+		expect(g.sessions.get("a").mutedIds.size).toBe(0);
+		expect(b).toBeDefined();
+	});
+
+	test("gmuted player cannot /g but can talk locally", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await gs.globalMute("a", clock + 60_000);
+		await say(gs, a, "/g hello world");
+		expect(chats(b)).toHaveLength(0);
+		expect(toasts(a).at(-1)).toMatchObject({ msg: "You are muted from global chat.", ok: false });
+		clock += 1000;
+		await say(gs, a, "hello");
+		expect(chats(b)).toHaveLength(1);
+		// It lapses
+		clock += 60_000;
+		await say(gs, a, "/g back");
+		expect(chats(b)).toHaveLength(2);
+		// A mute set while offline holds at the next login
+		gs.close(a as any);
+		await gs.globalMute("a", clock + 60_000);
+		const again = await join(gs, "a");
+		await say(gs, again, "/g still muted");
+		expect(chats(b)).toHaveLength(2);
+	});
+
+	test("global and private messages are written to ChatLog, local are not", async () => {
+		const gs = server();
+		const [a] = await trio(gs);
+		await say(gs, a, "local one");
+		clock += 1000;
+		await say(gs, a, "/p private one");
+		clock += 1000;
+		await say(gs, a, "/g global one");
+		const rows = await ChatLog.find({}).sort({ at: 1 }).lean();
+		expect(rows.map((r) => [r.channel, r.fromId, r.text, r.instanceId])).toEqual([
+			["private", "a", "private one", "lobby:1"],
+			["global", "a", "global one", "lobby:1"],
+		]);
+		const idx = await ChatLog.collection.indexes();
+		expect(idx.find((i) => i.key.at === 1)?.expireAfterSeconds).toBe(30 * 86400);
 	});
 });

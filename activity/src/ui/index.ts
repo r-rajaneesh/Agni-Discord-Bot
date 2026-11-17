@@ -3,6 +3,7 @@ import { facedTile, HOUSE_DOOR } from "@game/engine";
 import type { TClientMsg, TServerMsg } from "@game/protocol";
 import type { ClientState } from "../state";
 import type { Panel } from "./dom";
+import { ChatPanel } from "./chat";
 import { el } from "./dom";
 import { Hotbar } from "./hotbar";
 import { Hud } from "./hud";
@@ -24,6 +25,7 @@ export class GameUI {
 	private store: StorePanel;
 	private lobbies: LobbyPanel;
 	private unlock: UnlockPanel;
+	private chat: ChatPanel;
 	private current: Panel | null = null;
 	private useSeq = 0;
 
@@ -46,14 +48,8 @@ export class GameUI {
 			p.onClose = () => this.close();
 			layer.append(p.root);
 		}
-		// Task 16 builds the chat box on this element and unhides it
-		const chat = el("input", "chat-input");
-		chat.id = "chat-input";
-		chat.type = "text";
-		chat.maxLength = 200;
-		chat.autocomplete = "off";
-		chat.hidden = true;
-		this.root.append(layer, chat);
+		this.root.append(layer);
+		this.chat = new ChatPanel(this.root, (text) => this.send({ t: "chat", text }));
 		parent.append(this.root);
 	}
 
@@ -65,6 +61,8 @@ export class GameUI {
 			case "menu":
 				this.shop.render();
 				return this.open(this.shop);
+			case "chat":
+				return this.chat.add(m);
 			case "lobbyList":
 				// Only for the panel that asked: closed with Esc before the reply, it stays closed
 				if (this.current === this.lobbies) this.lobbies.render(m);
@@ -116,10 +114,9 @@ export class GameUI {
 		this.lobbies.request();
 	}
 
-	/** Enter: focus the chat box once Task 16 has made it visible */
+	/** Enter: open the chat box and focus its input */
 	focusChat(): void {
-		const c = document.getElementById("chat-input");
-		if (c instanceof HTMLInputElement && !c.hidden) c.focus();
+		this.chat.focus();
 	}
 
 	close(): void {

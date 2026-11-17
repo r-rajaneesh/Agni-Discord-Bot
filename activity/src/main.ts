@@ -92,6 +92,7 @@ async function main(): Promise<void> {
 		},
 		handle: (hints, m) => {
 			world?.handle(hints);
+			if (m.t === "chat" && m.channel === "local") world?.say(m.from.userId, m.text);
 			ui?.message(m);
 		},
 		// Final: GameClient ignores everything after this, so nothing can restart the game over this screen

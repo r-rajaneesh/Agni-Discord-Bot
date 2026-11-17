@@ -17,6 +17,7 @@ import type EconomyManager from "./EconomyManager";
 import { landIdOf, type TLocation, type TStoredPlayer } from "./InstanceStore";
 import type InstanceStore from "./InstanceStore";
 import type PaymentManager from "./PaymentManager";
+import { chat, type TChatCtx } from "./game/chat";
 import { action, dailyGems, isAction, strike, type TActionCtx } from "./game/actions";
 import Wildlife from "./game/animals";
 import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
@@ -75,6 +76,12 @@ export interface TSession {
 	actions: number[];
 	/** When "Slow down." was last sent */
 	slowedAt: number;
+	/** Players this one muted; their chat is hidden from this player only */
+	mutedIds: Set<string>;
+	/** Bot-owner mute from global chat, until this time (epoch ms) */
+	globalMutedUntil: number;
+	lastChatAt: number;
+	lastGlobalAt: number;
 }
 
 interface TConn {
@@ -122,6 +129,7 @@ export default class GameServer {
 	/** Player saves run in order, so an older position never overwrites a newer one */
 	private saves: Promise<void> = Promise.resolve();
 	private ctx: TActionCtx;
+	private chatCtx: TChatCtx;
 
 	constructor(deps: TGameServerDeps) {
 		this.deps = deps;
@@ -150,6 +158,13 @@ export default class GameServer {
 			},
 			leave: (s) => this.leave(s),
 			place: (s, rt, base, at, prices) => this.place(s, rt, base, at, prices),
+		};
+		this.chatCtx = {
+			deps,
+			now: this.now,
+			send: (ws, msg) => this.send(ws, msg),
+			toast: (s, msg, ok) => this.toast(s, msg, ok),
+			sessions: () => this.sessions.values(),
 		};
 		if (deps.autoTick !== false) this.timer = setInterval(() => this.tick(), TICK_MS);
 	}
@@ -209,9 +224,11 @@ export default class GameServer {
 				return this.send(s.ws, this.lobbies.list(s.rt.inst.lobby?.n ?? null));
 			case "switchLobby":
 				return this.switchLobby(s, m.lobby);
+			case "chat":
+				return chat(this.chatCtx, s, m.text);
 			default:
 				if (isAction(m)) return action(this.ctx, s, m);
-				// Chat, emotes and cosmetics arrive in later tasks
+				// Emotes and cosmetics arrive in later tasks
 				return this.toast(s, "Not available yet.", false);
 		}
 	}
@@ -282,6 +299,9 @@ export default class GameServer {
 			});
 			if (!r.ok) this.deps.log.warn(`[GAME] starter grant failed for ${userId}: ${r.message}`);
 		}
+		const muted = old
+			? { mutedIds: [...old.mutedIds], globalMutedUntil: old.globalMutedUntil }
+			: await this.deps.store.loadChatState(userId).catch(() => ({ mutedIds: [] as string[], globalMutedUntil: 0 }));
 		const premium = await this.deps.payments.hasPass(userId).catch(() => false);
 		const prices = await this.prices();
 		const kind = old ? old.rt.inst.kind : (stored?.location.instanceKind ?? "land");
@@ -329,6 +349,10 @@ export default class GameServer {
 			ents: "[]",
 			actions: [],
 			slowedAt: -Infinity,
+			mutedIds: new Set(muted.mutedIds),
+			globalMutedUntil: muted.globalMutedUntil,
+			lastChatAt: -Infinity,
+			lastGlobalAt: -Infinity,
 		};
 		conn.ws.data.userId = userId;
 		conn.state = "ready";
@@ -659,6 +683,13 @@ export default class GameServer {
 			await this.saves;
 			return this.deps.store.setEnergy(userId, MAX_ENERGY, this.now());
 		});
+	}
+
+	/** Mutes a player from global chat until `until` (epoch ms; a time in the past lifts it), online or not */
+	async globalMute(userId: string, until: number): Promise<void> {
+		await this.deps.store.setGlobalMute(userId, until);
+		const s = this.sessions.get(userId);
+		if (s) s.globalMutedUntil = until;
 	}
 
 	/** Saves every player and closes every socket */

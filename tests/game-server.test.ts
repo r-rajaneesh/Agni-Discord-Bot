@@ -11,6 +11,7 @@ import { LAND_GATE, SHOP_DOORS, TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from ".
 import EconomyManager from "../managers/EconomyManager";
 import GameServer, { LOBBY_CAP, type TGameServerDeps } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
+import LinkCooldown from "../managers/LinkCooldown";
 import PaymentManager from "../managers/PaymentManager";
 import { productById } from "../game/data/products";
 import { Earning, Inventory, LedgerEntry, MarketItem, Order, Wallet } from "../managers/models/Economy";
@@ -59,7 +60,7 @@ function server(st: InstanceStore = store, extra: Partial<TGameServerDeps> = {})
 		store: st,
 		auth,
 		eco,
-		payments: { hasPass: async () => false, createRazorpayLink: async () => "", razorpayEnabled: false },
+		payments: { hasPass: async () => false, createRazorpayLink: async () => "", razorpayEnabled: false, links: new LinkCooldown() },
 		dm: async () => {},
 		log: quiet,
 		now: () => clock,
@@ -1017,6 +1018,7 @@ describe("actions", () => {
 			payments: {
 				hasPass: async () => false,
 				razorpayEnabled: true,
+				links: new LinkCooldown(),
 				createRazorpayLink: async (_userId, product) => (links.push(product.id), "https://rzp.io/l/abc"),
 			},
 			dm: async (userId, content) => void dms.push([userId, content]),
@@ -1041,7 +1043,7 @@ describe("actions", () => {
 	test("buyProduct sends one link per product per 30 s", async () => {
 		const dms: string[] = [];
 		const gs = server(store, {
-			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async () => "https://rzp.io/l/abc" },
+			payments: { hasPass: async () => false, razorpayEnabled: true, links: new LinkCooldown(), createRazorpayLink: async () => "https://rzp.io/l/abc" },
 			dm: async (_u, content) => void dms.push(content),
 		});
 		const ws = await join(gs, "u1");
@@ -1552,7 +1554,7 @@ describe("emotes", () => {
 		const links: string[] = [];
 		const dms: string[] = [];
 		const gs = server(store, {
-			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+			payments: { hasPass: async () => false, razorpayEnabled: true, links: new LinkCooldown(), createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
 			dm: async (_u, content) => void dms.push(content),
 		});
 		const [a] = await trio(gs);
@@ -1585,7 +1587,7 @@ describe("emotes", () => {
 		const links: string[] = [];
 		for (const itemId of productById("emotes_party_pack")!.items!) await Ownership.create({ userId: "a", itemId, source: "gems" });
 		const gs = server(store, {
-			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+			payments: { hasPass: async () => false, razorpayEnabled: true, links: new LinkCooldown(), createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
 		});
 		const [a] = await trio(gs);
 		await act(gs, a, { t: "buyProduct", productId: "emotes_party_pack" });

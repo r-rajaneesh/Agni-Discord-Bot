@@ -61,7 +61,7 @@ async function shopView(client: ClientManager, userId: string, status = "") {
 }
 
 // Uses the Pass's free daily refill when it is left, else 10 gems, and fills energy in the game
-async function refill(client: ClientManager, userId: string): Promise<string> {
+async function refill(client: ClientManager, userId: string, clickId: string): Promise<string> {
 	const game = client.gameServer;
 	if (!game) return "The game is not running right now. Try again later.";
 	// Checked before charging: there is no energy to fill until the player has played
@@ -76,11 +76,19 @@ async function refill(client: ClientManager, userId: string): Promise<string> {
 			client.log.error("[SHOP] energy refill failed", e);
 			return failed;
 		}
-		await client.economy.transact([], { reason: "pass_refill", idempotencyKey: key });
+		// The energy is already filled, so a failure to record it still answers
+		await client.economy
+			.transact([], { reason: "pass_refill", idempotencyKey: key })
+			.catch((e) => client.log.error("[SHOP] recording the pass refill failed", e));
 		return "⚡ Energy refilled (Farm Pass daily refill).";
 	}
-	const r = await client.economy.transact([{ userId, gems: -GEM_PRICES.energyRefill }], { reason: "gem_energy_refill" });
+	// Keyed by the click, so a retried debit never charges twice
+	const r = await client.economy.transact([{ userId, gems: -GEM_PRICES.energyRefill }], {
+		reason: "gem_energy_refill",
+		idempotencyKey: `refill:${userId}:${clickId}`,
+	});
 	if (!r.ok) return "Not enough gems.";
+	if (r.duplicate) return `⚡ Energy refilled for ${GEM_PRICES.energyRefill} 💎.`;
 	let done = false;
 	try {
 		done = await game.refillEnergy(userId);
@@ -88,7 +96,10 @@ async function refill(client: ClientManager, userId: string): Promise<string> {
 		client.log.error("[SHOP] energy refill failed", e);
 	}
 	if (done) return `⚡ Energy refilled for ${GEM_PRICES.energyRefill} 💎.`;
-	await client.economy.transact([{ userId, gems: GEM_PRICES.energyRefill }], { reason: "gem_energy_refill_refund" });
+	await client.economy.transact([{ userId, gems: GEM_PRICES.energyRefill }], {
+		reason: "gem_energy_refill_refund",
+		idempotencyKey: `refill-refund:${userId}:${clickId}`,
+	});
 	return failed;
 }
 
@@ -116,7 +127,20 @@ export default new CommandBuilder({
 			const product = productById(arg ?? "");
 			if (!product || !client.payments.razorpayEnabled) return interaction.deferUpdate();
 			await interaction.deferReply({ flags: Discord.MessageFlags.Ephemeral });
-			const url = await client.payments.createRazorpayLink(userId, product);
+			const say = (description: string) =>
+				interaction.editReply({ embeds: [client.makeEmbed({ title: `${product.emoji} ${product.name}`, description, color: client.config.colours.blurple })] });
+			if (await client.payments.ownsAll(userId, product)) return say("You already own everything in this pack.");
+			// Shared with the Activity, so a double click (or a click in both) makes one link
+			if (!client.payments.links.claim(userId, product.id, Date.now()))
+				return say("A payment link for this was made recently. Use that one, or try again in 30 seconds.");
+			let url: string;
+			try {
+				url = await client.payments.createRazorpayLink(userId, product);
+			} catch (e) {
+				client.log.error("[SHOP] payment link failed", e);
+				client.payments.links.release(userId, product.id);
+				return say("Couldn't create a payment link. Try again later.");
+			}
 			return interaction.editReply({
 				embeds: [
 					client.makeEmbed({
@@ -135,7 +159,7 @@ export default new CommandBuilder({
 
 		if (action === "spend" && arg === "energy") {
 			await interaction.deferUpdate();
-			return interaction.editReply(await shopView(client, userId, await refill(client, userId)));
+			return interaction.editReply(await shopView(client, userId, await refill(client, userId, interaction.id)));
 		}
 		return interaction.deferUpdate();
 	},

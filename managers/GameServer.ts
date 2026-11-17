@@ -112,7 +112,7 @@ export interface TGameServerDeps {
 	store: InstanceStore;
 	auth: Pick<ActivityAuth, "verify" | "guild">;
 	eco: EconomyManager;
-	payments: Pick<PaymentManager, "hasPass" | "createRazorpayLink" | "razorpayEnabled">;
+	payments: Pick<PaymentManager, "hasPass" | "createRazorpayLink" | "razorpayEnabled" | "links">;
 	dm: (userId: string, content: string) => Promise<void>;
 	log: TLog;
 	now?: () => number;
@@ -160,7 +160,6 @@ export default class GameServer {
 			deps,
 			now: this.now,
 			rand: deps.rand ?? Math.random,
-			linkSentAt: new Map(),
 			send: (ws, msg) => this.send(ws, msg),
 			toast: (s, msg, ok) => this.toast(s, msg, ok),
 			run: (rt, fn) => this.run(rt, fn),

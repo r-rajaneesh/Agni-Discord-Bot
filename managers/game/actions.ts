@@ -26,9 +26,6 @@ export const DAILY_GEMS = 5;
 /** Chance of a gem per ore mined, and the most a player finds by mining in a UTC day */
 export const ORE_GEM_CHANCE = 0.01;
 export const ORE_GEMS_PER_DAY = 5;
-/** One payment link per product per player in this window */
-export const LINK_COOLDOWN_MS = 30_000;
-
 const ACTIONS = ["use", "equip", "sleep", "travel", "buy", "sell", "unlock", "buyProduct"] as const;
 export type TAction = Extract<TClientMsg, { t: (typeof ACTIONS)[number] }>;
 
@@ -37,8 +34,6 @@ export interface TActionCtx {
 	deps: TGameServerDeps;
 	now(): number;
 	rand(): number;
-	/** `<userId>:<productId>` → when its payment link was last sent */
-	linkSentAt: Map<string, number>;
 	send(ws: TSocket, msg: TServerMsg): void;
 	toast(s: TSession, msg: string, ok: boolean): void;
 	run<T>(rt: TRuntime, fn: () => T | Promise<T>): Promise<T>;
@@ -362,26 +357,21 @@ export async function buyProduct(ctx: TActionCtx, s: TSession, productId: string
 	if (product.kind === "cosmetic" && (product.items ?? []).every((id) => s.owned.has(id))) return ctx.toast(s, "You already own everything in this pack.", false);
 	const { payments, dm, log } = ctx.deps;
 	if (!payments.razorpayEnabled) return ctx.toast(s, "Purchases are not available right now.", false);
-	const key = `${s.userId}:${product.id}`;
-	const now = ctx.now();
-	const sent = ctx.linkSentAt.get(key);
-	if (sent !== undefined && now - sent < LINK_COOLDOWN_MS) return ctx.toast(s, "Check your DMs — a link was sent recently.", false);
 	// Claimed before the awaits, so a double click sends one link
-	ctx.linkSentAt.set(key, now);
-	if (ctx.linkSentAt.size > 1000) for (const [k, at] of ctx.linkSentAt) if (now - at >= LINK_COOLDOWN_MS) ctx.linkSentAt.delete(k);
+	if (!payments.links.claim(s.userId, product.id, ctx.now())) return ctx.toast(s, "Check your DMs — a link was sent recently.", false);
 	let url: string;
 	try {
 		url = await payments.createRazorpayLink(s.userId, product);
 	} catch (e) {
 		log.error("[GAME] payment link failed", e);
-		ctx.linkSentAt.delete(key);
+		payments.links.release(s.userId, product.id);
 		return ctx.toast(s, "Couldn't create a payment link. Try again later.", false);
 	}
 	try {
 		await dm(s.userId, `${product.emoji} **${product.name}**: pay here within 30 minutes: ${url}\nYour item appears in game as soon as payment completes.`);
 	} catch (e) {
 		log.warn("[GAME] payment link DM failed", e);
-		ctx.linkSentAt.delete(key);
+		payments.links.release(s.userId, product.id);
 		return ctx.toast(s, "Couldn't DM you. Allow DMs from the bot and try again.", false);
 	}
 	ctx.toast(s, "Check your DMs to pay.", true);

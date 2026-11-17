@@ -23,7 +23,7 @@ describe("commands", () => {
 
 // The gem-paid energy refill, and the Farm Pass free daily one, fill energy through the game server
 describe("shop energy refill", () => {
-	async function press(opts: { pass: boolean; gemsOk?: boolean; game?: boolean; played?: boolean; passUsed?: boolean; refillFails?: boolean }) {
+	async function press(opts: { pass: boolean; gemsOk?: boolean; game?: boolean; played?: boolean; passUsed?: boolean; refillFails?: boolean; markFails?: boolean }) {
 		const { default: shop } = await import(path.resolve("./commands/economy/shop.ts"));
 		const transact: any[][] = [];
 		const refills: string[] = [];
@@ -34,6 +34,7 @@ describe("shop energy refill", () => {
 				wallet: async () => ({ gems: 50, coins: 0 }),
 				hasEntry: async (key: string) => !!opts.passUsed && key.startsWith("passrefill:"),
 				transact: async (...a: any[]) => {
+					if (opts.markFails && a[1].reason === "pass_refill") throw new Error("db down");
 					transact.push(a);
 					return a[0].length && opts.gemsOk === false ? { ok: false, error: "insufficient_gems", message: "insufficient_gems" } : { ok: true };
 				},
@@ -53,6 +54,7 @@ describe("shop energy refill", () => {
 			log: { error: () => {} },
 		};
 		const interaction = {
+			id: "i42",
 			user: { id: "u1" },
 			customId: "shop:spend:energy",
 			isChatInputCommand: () => false,
@@ -68,6 +70,8 @@ describe("shop energy refill", () => {
 		const r = await press({ pass: false });
 		expect(r.transact).toHaveLength(1);
 		expect(r.transact[0]![0]).toEqual([{ userId: "u1", gems: -10 }]);
+		// One charge per click, even if the debit is retried
+		expect(r.transact[0]![1].idempotencyKey).toBe("refill:u1:i42");
 		expect(r.refills).toEqual(["u1"]);
 		expect(r.text).toContain("Energy refilled for 10");
 		expect(r.text).toContain("shop:spend:energy");
@@ -86,6 +90,12 @@ describe("shop energy refill", () => {
 		const r = await press({ pass: true, refillFails: true });
 		expect(r.transact).toHaveLength(0);
 		expect(r.text).toContain("Couldn't refill your energy.");
+	});
+
+	test("a failure to record the free refill still answers, as the energy was filled", async () => {
+		const r = await press({ pass: true, markFails: true });
+		expect(r.refills).toEqual(["u1"]);
+		expect(r.text).toContain("Farm Pass daily refill");
 	});
 
 	test("once today's free refill is used, the Pass pays with gems and the button shows the price", async () => {
@@ -126,6 +136,80 @@ describe("shop", () => {
 		const { PRODUCTS } = await import("../game/data/products");
 		expect(PRODUCTS.map((p) => p.id)).toEqual(["farm_pass", "emotes_party_pack"]);
 		expect(PRODUCTS.map((p) => p.kind)).toEqual(["pass", "cosmetic"]);
+	});
+});
+
+// The UPI / Card button: a Razorpay link in an ephemeral reply
+describe("shop payment link", () => {
+	async function setup(opts: { ownsAll?: boolean; linkFails?: boolean } = {}) {
+		const { default: shop } = await import(path.resolve("./commands/economy/shop.ts"));
+		const { default: LinkCooldown } = await import("../managers/LinkCooldown");
+		const links: string[] = [];
+		const replies: any[] = [];
+		const client = {
+			config: { colours: { blurple: 0x5865f2 } },
+			makeEmbed: (e: unknown) => e,
+			payments: {
+				razorpayEnabled: true,
+				links: new LinkCooldown(),
+				ownsAll: async () => !!opts.ownsAll,
+				createRazorpayLink: async (_u: string, product: { id: string }) => {
+					if (opts.linkFails) throw new Error("razorpay down");
+					links.push(product.id);
+					return "https://rzp.io/l/x";
+				},
+			},
+			log: { error: () => {} },
+		};
+		const click = (productId: string) =>
+			shop.execute({
+				client,
+				interaction: {
+					id: "i1",
+					user: { id: "u1" },
+					customId: `shop:rzp:${productId}`,
+					isChatInputCommand: () => false,
+					isButton: () => true,
+					deferUpdate: async () => {},
+					deferReply: async () => {},
+					editReply: async (m: unknown) => replies.push(m),
+				},
+			});
+		const text = () => JSON.stringify(replies.at(-1));
+		return { client, click, links, text };
+	}
+
+	test("makes a link", async () => {
+		const { click, links, text } = await setup();
+		await click("emotes_party_pack");
+		expect(links).toEqual(["emotes_party_pack"]);
+		expect(text()).toContain("https://rzp.io/l/x");
+	});
+
+	test("refuses a pack the player already fully owns", async () => {
+		const { click, links, text } = await setup({ ownsAll: true });
+		await click("emotes_party_pack");
+		expect(links).toEqual([]);
+		expect(text()).toContain("You already own everything in this pack.");
+	});
+
+	test("one link per product per 30 s, shared with the Activity", async () => {
+		const { client, click, links, text } = await setup();
+		await click("emotes_party_pack");
+		await click("emotes_party_pack");
+		expect(links).toEqual(["emotes_party_pack"]);
+		expect(text()).toContain("recently");
+		// A link the Activity just sent counts too
+		expect(client.payments.links.claim("u1", "farm_pass", Date.now())).toBe(true);
+		await click("farm_pass");
+		expect(links).toEqual(["emotes_party_pack"]);
+	});
+
+	test("a failed link answers kindly and frees the cooldown", async () => {
+		const { client, click, text } = await setup({ linkFails: true });
+		await click("farm_pass");
+		expect(text()).toContain("Couldn't create a payment link. Try again later.");
+		expect(client.payments.links.claim("u1", "farm_pass", Date.now())).toBe(true);
 	});
 });
 

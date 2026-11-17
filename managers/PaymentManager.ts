@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Razorpay from "razorpay";
 import { productById, productBySku, type TProduct } from "../game/data/products";
 import type ClientManager from "./ClientManager";
+import LinkCooldown from "./LinkCooldown";
 import { Ownership, own, ownedItems } from "./models/Cosmetics";
 import { Purchase, Subscription } from "./models/Economy";
 
@@ -22,6 +23,8 @@ const purchaseKey = (p: { provider: string; paymentId?: string | null; externalI
 export default class PaymentManager {
 	private client: ClientManager;
 	private razorpay: Razorpay | null;
+	/** Payment link cooldown, shared by the Activity and /shop */
+	public readonly links = new LinkCooldown();
 
 	constructor(client: ClientManager) {
 		this.client = client;
@@ -92,6 +95,13 @@ export default class PaymentManager {
 			return;
 		}
 		await Subscription.updateOne({ sourceId: sourceKey }, { $set: { active: false } });
+	}
+
+	/** True when the player already owns every item of a cosmetic pack (a pass can always be bought again) */
+	public async ownsAll(userId: string, product: TProduct) {
+		if (product.kind !== "cosmetic") return false;
+		const owned = new Set(await ownedItems(userId));
+		return (product.items ?? []).every((id) => owned.has(id));
 	}
 
 	public async hasPass(userId: string) {

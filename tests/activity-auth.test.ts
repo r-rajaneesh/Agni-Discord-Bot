@@ -59,11 +59,22 @@ describe("ActivityAuth", () => {
 		expect((calls[0]!.init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
 	});
 
-	test("verify returns null on 401 and does not cache it", async () => {
-		const { auth, calls } = setup([{ status: 401 }, { status: 200, body: { id: "1", username: "u" } }]);
+	test("verify caches a rejected token for 60 s, so spam can't hammer Discord", async () => {
+		const { auth, calls, advance } = setup([{ status: 401 }, { status: 200, body: { id: "1", username: "u" } }]);
 		expect(await auth.verify("tok")).toBeNull();
+		advance(59_000);
+		expect(await auth.verify("tok")).toBeNull();
+		expect(calls.length).toBe(1);
+		advance(2_000);
 		expect(await auth.verify("tok")).toEqual({ id: "1", name: "u" });
 		expect(calls.length).toBe(2);
+	});
+
+	test("rejected-token cache stays bounded", async () => {
+		const queue = Array.from({ length: 10_050 }, () => ({ status: 401 }));
+		const { auth } = setup(queue);
+		for (let i = 0; i < 10_050; i++) await auth.verify(`bad${i}`);
+		expect(auth.cacheSize).toBeLessThanOrEqual(10_000);
 	});
 
 	test("verify returns null on network error and does not cache it", async () => {

@@ -288,6 +288,52 @@ describe("sessions", () => {
 		expect(last(ws, "kicked")).toBeUndefined();
 	});
 
+	test("at most 20 token checks run at once; extra hellos close with 1013", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const slow = { ...auth, verify: async (t: string) => (await gate, auth.verify(t)) };
+		const gs = server(store, { auth: slow });
+		const socks = Array.from({ length: 21 }, () => sock());
+		const pending = socks.map((ws, i) => {
+			gs.open(ws as any);
+			return gs.message(ws as any, raw({ t: "hello", v: 1, token: `tok:v${i}`, instanceId: "i", guildId: null }));
+		});
+		await Bun.sleep(10);
+		expect(socks[20]!.close).toHaveBeenCalledWith(1013, "try again later");
+		expect(last(socks[20]!, "kicked")).toBeUndefined();
+		for (const ws of socks.slice(0, 20)) expect(ws.close).not.toHaveBeenCalled();
+		release();
+		await Promise.all(pending);
+		expect(last(socks[0]!, "welcome")).toBeDefined();
+		// The slots free up once the checks finish
+		const ws = await join(gs, "late");
+		expect(last(ws, "welcome")).toBeDefined();
+	});
+
+	test("a socket that hasn't finished hello within 10 s is closed", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const slow = { ...auth, verify: async (t: string) => (t === "tok:stuck" ? (await gate, auth.verify(t)) : auth.verify(t)) };
+		const gs = server(store, { auth: slow });
+		const silent = sock();
+		gs.open(silent as any);
+		const stuck = sock();
+		gs.open(stuck as any);
+		const pending = gs.message(stuck as any, raw({ t: "hello", v: 1, token: "tok:stuck", instanceId: "i", guildId: null }));
+		const ok = await join(gs, "u1");
+		clock += 9_999;
+		gs.tick();
+		expect(silent.close).not.toHaveBeenCalled();
+		clock += 1;
+		gs.tick();
+		expect(silent.close).toHaveBeenCalledWith(1008, "hello timeout");
+		expect(stuck.close).toHaveBeenCalledWith(1008, "hello timeout");
+		expect(ok.close).not.toHaveBeenCalled();
+		release();
+		await pending;
+		expect(last(stuck, "welcome")).toBeUndefined();
+	});
+
 	test("shutdown waits for queued instance changes before the final save", async () => {
 		const gs = server();
 		const ws = await join(gs, "u1");

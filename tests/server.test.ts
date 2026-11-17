@@ -145,6 +145,24 @@ describe("server", () => {
 		}
 	});
 
+	test("per-IP limits answer 429 on /ws upgrades and /api/token", async () => {
+		const s = startServer({ ...deps, limits: { upgrades: 2, tokens: 2 } }, 0);
+		const at = `http://localhost:${s.port}`;
+		const token = () => fetch(`${at}/api/token`, { method: "POST", body: JSON.stringify({ code: "good" }) });
+		const before = calls.exchanged;
+		expect((await token()).status).toBe(200);
+		expect((await token()).status).toBe(200);
+		const refused = await token();
+		expect(refused.status).toBe(429);
+		expect(refused.headers.get("content-security-policy")).toContain("frame-ancestors");
+		expect(calls.exchanged).toBe(before + 2);
+		// Not upgrade requests, but they count against the same budget
+		expect((await fetch(`${at}/ws`)).status).toBe(426);
+		expect((await fetch(`${at}/ws`)).status).toBe(426);
+		expect((await fetch(`${at}/ws`)).status).toBe(429);
+		s.stop(true);
+	});
+
 	test("ws upgrade calls open/message/close", async () => {
 		const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
 		await new Promise((r) => (ws.onopen = r));

@@ -2,6 +2,7 @@ import type { Server, ServerWebSocket } from "bun";
 import { resolve, sep } from "node:path";
 import { MAX_MSG_BYTES } from "./game/protocol";
 import type ActivityAuth from "./managers/ActivityAuth";
+import RateLimiter from "./managers/RateLimiter";
 
 export type TSocketData = { connId: string; userId?: string };
 
@@ -17,11 +18,15 @@ export interface TServerDeps {
 		close(ws: ServerWebSocket<TSocketData>): void;
 	};
 	staticDir: string;
+	/** Per-IP requests per minute; defaults to 20 websocket upgrades and 10 token exchanges */
+	limits?: { upgrades?: number; tokens?: number };
 	log: { info(...a: unknown[]): void; error(...a: unknown[]): void; warn(...a: unknown[]): void };
 }
 
 const WEBHOOK_MAX_BYTES = 100 * 1024;
 const TOKEN_MAX_BYTES = 4096;
+const UPGRADES_PER_MIN = 20;
+const TOKENS_PER_MIN = 10;
 
 const PAID_HTML =
 	"<!doctype html><meta charset=utf-8><title>Payment received</title><body style='font-family:sans-serif;text-align:center;padding:4rem'><h1>Payment received ✅</h1><p>Your items arrive in Discord within a minute. You can close this tab.</p>";
@@ -81,6 +86,12 @@ async function serveStatic(root: string, pathname: string): Promise<Response> {
 }
 
 export function startServer(deps: TServerDeps, port: number): Server {
+	// Each failed hello or code exchange costs a Discord API call; spam from one address must not get the bot's IP banned
+	const upgrades = new RateLimiter({ limit: deps.limits?.upgrades ?? UPGRADES_PER_MIN, windowMs: 60_000 });
+	const tokens = new RateLimiter({ limit: deps.limits?.tokens ?? TOKENS_PER_MIN, windowMs: 60_000 });
+	const ipOf = (req: Request, server: Server) => server.requestIP(req)?.address ?? "unknown";
+	const tooMany = () => new Response("Too many requests", { status: 429, headers: { "Retry-After": "60" } });
+
 	async function handle(req: Request, server: Server): Promise<Response | undefined> {
 		const url = new URL(req.url);
 		const { pathname } = url;
@@ -111,6 +122,7 @@ export function startServer(deps: TServerDeps, port: number): Server {
 
 		if (pathname === "/api/token" && req.method === "POST") {
 			if (deps.authEnabled === false) return json({ error: "activity auth not configured" }, 503);
+			if (!tokens.take(ipOf(req, server))) return tooMany();
 			const raw = await readCapped(req, TOKEN_MAX_BYTES);
 			if (!raw) return json({ error: "payload too large" }, 413);
 			let code: unknown;
@@ -126,6 +138,7 @@ export function startServer(deps: TServerDeps, port: number): Server {
 		}
 
 		if (pathname === "/ws") {
+			if (!upgrades.take(ipOf(req, server))) return tooMany();
 			const ok = server.upgrade(req, { data: { connId: crypto.randomUUID() } });
 			return ok ? undefined : new Response("Upgrade required", { status: 426 });
 		}

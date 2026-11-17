@@ -35,6 +35,10 @@ const FLUSH_MS = 5000;
 const LAND_UNLOAD_MS = 5 * 60_000;
 const LOBBY_CLOSE_MS = 60_000;
 const MAX_INVALID = 20;
+/** Token checks (Discord API calls) in flight at once; more hellos are told to retry */
+const MAX_VERIFYING = 20;
+/** A socket that hasn't finished hello by then is closed */
+const HELLO_TIMEOUT_MS = 10_000;
 /** How long shutdown waits for queued instance changes */
 const SHUTDOWN_DRAIN_MS = 5000;
 const PALETTE = ["#e74c3c", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#f1c40f", "#e84393", "#2ecc71"];
@@ -97,6 +101,7 @@ export interface TSession {
 interface TConn {
 	ws: TSocket;
 	state: "new" | "pending" | "ready" | "closed";
+	openedAt: number;
 	invalid: number;
 	session?: TSession;
 }
@@ -136,6 +141,8 @@ export default class GameServer {
 	private lobbies: Lobbies<TRuntime>;
 	/** Hellos for one user run one at a time */
 	private userLocks = new Map<string, Promise<unknown>>();
+	/** Token checks in flight */
+	private verifying = 0;
 	/** Player saves run in order, so an older position never overwrites a newer one */
 	private saves: Promise<void> = Promise.resolve();
 	private ctx: TActionCtx;
@@ -188,7 +195,7 @@ export default class GameServer {
 	// ---------- sockets ----------
 
 	open(ws: TSocket): void {
-		this.conns.set(ws.data.connId, { ws, state: "new", invalid: 0 });
+		this.conns.set(ws.data.connId, { ws, state: "new", openedAt: this.now(), invalid: 0 });
 	}
 
 	close(ws: TSocket): void {
@@ -289,7 +296,16 @@ export default class GameServer {
 	private async hello(conn: TConn, m: Extract<TClientMsg, { t: "hello" }>) {
 		try {
 			if (m.v !== PROTOCOL_VERSION) return this.drop(conn, 4000, "outdated client", "outdated client");
-			const user = await this.deps.auth.verify(m.token);
+			// 1013 without kicked: the client retries with backoff
+			if (this.verifying >= MAX_VERIFYING) return this.drop(conn, 1013, "try again later");
+			this.verifying++;
+			let user: Awaited<ReturnType<TGameServerDeps["auth"]["verify"]>>;
+			try {
+				user = await this.deps.auth.verify(m.token);
+			} finally {
+				this.verifying--;
+			}
+			if (conn.state === "closed") return;
 			if (!user) return this.drop(conn, 4001, "unauthorized", "unauthorized");
 			const home = m.guildId ? await this.deps.auth.guild(m.token, m.guildId) : null;
 			await this.forUser(user.id, () => this.join(conn, user, home));
@@ -570,6 +586,7 @@ export default class GameServer {
 			for (const s of movers) this.moved(s);
 			this.tickAnimals(now);
 			this.sweep(now);
+			this.helloTimeouts(now);
 			if (now - this.lastFlush >= FLUSH_MS) this.flush();
 		} catch (e) {
 			this.deps.log.error("[GAME] tick failed", e);
@@ -651,6 +668,12 @@ export default class GameServer {
 				this.lobbies.close(inst.lobby.n);
 			}
 		}
+	}
+
+	// Closes sockets that haven't finished hello in time
+	private helloTimeouts(now: number) {
+		for (const conn of [...this.conns.values()])
+			if ((conn.state === "new" || conn.state === "pending") && now - conn.openedAt >= HELLO_TIMEOUT_MS) this.drop(conn, 1008, "hello timeout");
 	}
 
 	// ---------- persistence ----------

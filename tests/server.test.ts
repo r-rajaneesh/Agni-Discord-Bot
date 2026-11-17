@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, type TServerDeps } from "../server";
+import { clientKey, startServer, type TServerDeps } from "../server";
 
 const dir = mkdtempSync(join(tmpdir(), "static-"));
 writeFileSync(join(dir, "index.html"), "<html>spa</html>");
@@ -146,9 +146,10 @@ describe("server", () => {
 	});
 
 	test("per-IP limits answer 429 on /ws upgrades and /api/token", async () => {
-		const s = startServer({ ...deps, limits: { upgrades: 2, tokens: 2 } }, 0);
+		const s = startServer({ ...deps, limits: { upgrades: 2, tokens: 2 }, trustedIpHeader: "cf-connecting-ip" }, 0);
 		const at = `http://localhost:${s.port}`;
-		const token = () => fetch(`${at}/api/token`, { method: "POST", body: JSON.stringify({ code: "good" }) });
+		const ip = { "cf-connecting-ip": "203.0.113.7" };
+		const token = (headers: Record<string, string> = ip) => fetch(`${at}/api/token`, { method: "POST", body: JSON.stringify({ code: "good" }), headers });
 		const before = calls.exchanged;
 		expect((await token()).status).toBe(200);
 		expect((await token()).status).toBe(200);
@@ -156,11 +157,39 @@ describe("server", () => {
 		expect(refused.status).toBe(429);
 		expect(refused.headers.get("content-security-policy")).toContain("frame-ancestors");
 		expect(calls.exchanged).toBe(before + 2);
+		// Another client behind the same proxy has its own bucket
+		expect((await token({ "cf-connecting-ip": "198.51.100.9" })).status).toBe(200);
 		// Not upgrade requests, but they count against the same budget
-		expect((await fetch(`${at}/ws`)).status).toBe(426);
-		expect((await fetch(`${at}/ws`)).status).toBe(426);
-		expect((await fetch(`${at}/ws`)).status).toBe(429);
+		const ws = () => fetch(`${at}/ws`, { headers: ip });
+		expect((await ws()).status).toBe(426);
+		expect((await ws()).status).toBe(426);
+		expect((await ws()).status).toBe(429);
 		s.stop(true);
+	});
+
+	test("without a trusted header, loopback requests are not limited", async () => {
+		const s = startServer({ ...deps, limits: { upgrades: 1, tokens: 1 }, trustedIpHeader: "" }, 0);
+		const at = `http://localhost:${s.port}`;
+		for (let i = 0; i < 3; i++) {
+			expect((await fetch(`${at}/api/token`, { method: "POST", body: JSON.stringify({ code: "good" }) })).status).toBe(200);
+			expect((await fetch(`${at}/ws`)).status).toBe(426);
+		}
+		s.stop(true);
+	});
+
+	test("clientKey picks the limiter key", () => {
+		const req = (headers: Record<string, string> = {}) => new Request("http://x/", { headers });
+		// Trusted header: its value; x-forwarded-for: the first address
+		expect(clientKey(req({ "cf-connecting-ip": "203.0.113.7" }), "127.0.0.1", "cf-connecting-ip")).toBe("203.0.113.7");
+		expect(clientKey(req({ "x-forwarded-for": "203.0.113.7, 10.0.0.1, 127.0.0.1" }), "127.0.0.1", "x-forwarded-for")).toBe("203.0.113.7");
+		// Header configured but absent: the request IP
+		expect(clientKey(req(), "198.51.100.9", "cf-connecting-ip")).toBe("198.51.100.9");
+		// No header: loopback and private addresses are not limited, public ones are
+		for (const ip of ["127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1"])
+			expect(clientKey(req(), ip, "")).toBeNull();
+		for (const ip of ["203.0.113.7", "172.32.0.1", "8.8.8.8", "2001:db8::1"]) expect(clientKey(req(), ip, "")).toBe(ip);
+		// A header sent by a client is ignored when none is trusted
+		expect(clientKey(req({ "x-forwarded-for": "1.2.3.4" }), "203.0.113.7", "")).toBe("203.0.113.7");
 	});
 
 	test("ws upgrade calls open/message/close", async () => {

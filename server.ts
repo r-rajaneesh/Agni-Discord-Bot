@@ -20,6 +20,8 @@ export interface TServerDeps {
 	staticDir: string;
 	/** Per-IP requests per minute; defaults to 20 websocket upgrades and 10 token exchanges */
 	limits?: { upgrades?: number; tokens?: number };
+	/** Header a trusted proxy sets to the client's address; defaults to TRUSTED_CLIENT_IP_HEADER */
+	trustedIpHeader?: string;
 	log: { info(...a: unknown[]): void; error(...a: unknown[]): void; warn(...a: unknown[]): void };
 }
 
@@ -85,11 +87,44 @@ async function serveStatic(root: string, pathname: string): Promise<Response> {
 	return new Response("Not found", { status: 404 });
 }
 
+// 127.0.0.0/8, ::1, 10/8, 172.16/12, 192.168/16, also as IPv4-mapped IPv6
+function isLocal(ip: string): boolean {
+	const v4 = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+	if (v4 === "::1") return true;
+	const [a, b] = v4.split(".").map(Number);
+	if (a === 127 || a === 10) return true;
+	if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true;
+	return a === 192 && b === 168;
+}
+
+/**
+ * The per-IP limiter key: the trusted header's value (for x-forwarded-for, its first address), else the request IP.
+ * Null means "don't limit": with no trusted header, a loopback or private address is a proxy or tunnel shared by every player.
+ */
+export function clientKey(req: Request, requestIP: string | undefined, trustedHeader: string): string | null {
+	if (trustedHeader) {
+		const value = req.headers.get(trustedHeader)?.split(",")[0]?.trim();
+		if (value) return value;
+		return requestIP ?? "unknown";
+	}
+	if (!requestIP || isLocal(requestIP)) return null;
+	return requestIP;
+}
+
 export function startServer(deps: TServerDeps, port: number): Server {
 	// Each failed hello or code exchange costs a Discord API call; spam from one address must not get the bot's IP banned
 	const upgrades = new RateLimiter({ limit: deps.limits?.upgrades ?? UPGRADES_PER_MIN, windowMs: 60_000 });
 	const tokens = new RateLimiter({ limit: deps.limits?.tokens ?? TOKENS_PER_MIN, windowMs: 60_000 });
-	const ipOf = (req: Request, server: Server) => server.requestIP(req)?.address ?? "unknown";
+	const trusted = (deps.trustedIpHeader ?? process.env.TRUSTED_CLIENT_IP_HEADER ?? "").trim().toLowerCase();
+	if (!trusted)
+		deps.log.warn(
+			"TRUSTED_CLIENT_IP_HEADER is not set: per-IP limits are off for loopback and private addresses (a proxy or tunnel). The verify cap, failed-token cache and hello timeout still apply.",
+		);
+	// True when the request may go on
+	const allow = (limiter: RateLimiter, req: Request, server: Server) => {
+		const key = clientKey(req, server.requestIP(req)?.address, trusted);
+		return key === null || limiter.take(key);
+	};
 	const tooMany = () => new Response("Too many requests", { status: 429, headers: { "Retry-After": "60" } });
 
 	async function handle(req: Request, server: Server): Promise<Response | undefined> {
@@ -122,7 +157,7 @@ export function startServer(deps: TServerDeps, port: number): Server {
 
 		if (pathname === "/api/token" && req.method === "POST") {
 			if (deps.authEnabled === false) return json({ error: "activity auth not configured" }, 503);
-			if (!tokens.take(ipOf(req, server))) return tooMany();
+			if (!allow(tokens, req, server)) return tooMany();
 			const raw = await readCapped(req, TOKEN_MAX_BYTES);
 			if (!raw) return json({ error: "payload too large" }, 413);
 			let code: unknown;
@@ -138,7 +173,7 @@ export function startServer(deps: TServerDeps, port: number): Server {
 		}
 
 		if (pathname === "/ws") {
-			if (!upgrades.take(ipOf(req, server))) return tooMany();
+			if (!allow(upgrades, req, server)) return tooMany();
 			const ok = server.upgrade(req, { data: { connId: crypto.randomUUID() } });
 			return ok ? undefined : new Response("Upgrade required", { status: 426 });
 		}

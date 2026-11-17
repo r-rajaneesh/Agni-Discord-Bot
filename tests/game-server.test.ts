@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, set
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import { CHUNK, LAND_PORTAL, LAND_SPAWN, cachedChunkCount, chunkOf } from "../game/chunks";
-import { DAY_MS, HOUSE_DOOR, MAX_ENERGY, TICK_MS, TREE_REGROW_MS, WALK_SPEED, enter, gemRoll, use, type TDir, type TInstance } from "../game/engine";
+import { DAY_MS, HOUSE_DOOR, MAX_ENERGY, ROCK_REGROW_MS, TICK_MS, TREE_REGROW_MS, WALK_SPEED, enter, use, type TDir, type TInstance } from "../game/engine";
 import * as entities from "../game/entities";
 import { T } from "../game/map";
 import type { TServerMsg } from "../game/protocol";
@@ -906,6 +906,23 @@ describe("actions", () => {
 		expect(dms).toHaveLength(1);
 	});
 
+	test("buyProduct sends one link per product per 30 s", async () => {
+		const dms: string[] = [];
+		const gs = server(store, {
+			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async () => "https://rzp.io/l/abc" },
+			dm: async (_u, content) => void dms.push(content),
+		});
+		const ws = await join(gs, "u1");
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		clock += 29_999;
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Check your DMs — a link was sent recently.", ok: false });
+		expect(dms).toHaveLength(1);
+		clock += 1;
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		expect(dms).toHaveLength(2);
+	});
+
 	test("buyProduct with Razorpay off toasts and DMs nothing", async () => {
 		const dms: string[] = [];
 		const gs = server(store, { dm: async (_u, content) => void dms.push(content) });
@@ -1002,6 +1019,7 @@ describe("actions", () => {
 });
 
 describe("gems and energy", () => {
+	const toastsOf = (ws: TSock) => sent(ws).filter((m) => m.t === "toast") as Extract<TServerMsg, { t: "toast" }>[];
 	test("5 gems once per UTC day on the first hello", async () => {
 		const gs = server();
 		const ws = await join(gs, "u1");
@@ -1020,23 +1038,59 @@ describe("gems and energy", () => {
 		expect((await eco.wallet("u1")).gems).toBe(10);
 	});
 
-	test("mining a rock whose gem roll hits credits 1 gem", async () => {
-		// A world rock that rolls a gem on day 1, with walkable ground to its left
-		let rock: { x: number; y: number } | undefined;
-		const half = (WORLD_CHUNKS / 2) * CHUNK;
-		for (let y = -half; y < half && !rock; y++)
-			for (let x = -half; x < half && !rock; x++)
-				if (worldTerrain(x, y) === T.rock && gemRoll(x, y, 1) && worldTerrain(x - 1, y) === T.grass) rock = { x, y };
-		expect(rock).toBeDefined();
-		await seedWorld("a", rock!.x - 0.5, rock!.y + 0.5, undefined, "r");
-		const gs = server();
+	// A world rock with walkable ground to its left
+	const ROCK = (() => {
+		for (let y = -60; y < 60; y++) for (let x = -60; x < 60; x++) if (worldTerrain(x, y) === T.rock && worldTerrain(x - 1, y) === T.grass) return { x, y };
+		throw new Error("no rock");
+	})();
+	// Mines ROCK n times, waiting for it to regrow in between
+	async function mine(gs: GameServer, ws: TSock, n: number) {
+		for (let i = 0; i < n; i++) {
+			await gs.message(ws as any, raw({ t: "use", seq: ++mineSeq }));
+			clock += ROCK_REGROW_MS;
+		}
+	}
+	let mineSeq = 0;
+	async function miner(rand: () => number) {
+		await seedWorld("a", ROCK.x - 0.5, ROCK.y + 0.5, undefined, "r");
+		const gs = server(store, { rand });
 		const ws = await join(gs, "a");
-		expect(welcome(ws).you).toMatchObject({ x: rock!.x - 0.5, y: rock!.y + 0.5 });
+		expect(welcome(ws).you).toMatchObject({ x: ROCK.x - 0.5, y: ROCK.y + 0.5 });
 		await gs.message(ws as any, raw({ t: "equip", item: "pickaxe" }));
-		await gs.message(ws as any, raw({ t: "use", seq: 1 }));
-		expect(last(ws, "toast")!.msg).toContain("1 💎");
+		return { gs, ws };
+	}
+
+	test("mining gem drops are capped at 5 per day", async () => {
+		const { gs, ws } = await miner(() => 0);
+		expect((await eco.wallet("a")).gems).toBe(5); // the daily reward
+		await mine(gs, ws, 10);
+		expect((await eco.wallet("a")).gems).toBe(10);
+		expect(last(ws, "wallet")!.gems).toBe(10);
+		expect(toastsOf(ws).filter((t) => t.msg.includes("You found a gem"))).toHaveLength(5);
+	});
+
+	test("cap resets next UTC day", async () => {
+		const { gs, ws } = await miner(() => 0);
+		await mine(gs, ws, 6);
+		expect((await eco.wallet("a")).gems).toBe(10);
+		clock += 86_400_000;
+		await mine(gs, ws, 6);
+		expect((await eco.wallet("a")).gems).toBe(15);
+	});
+
+	test("re-mining a regrown lobby rock does not repeat a gem", async () => {
+		const rolls = [0];
+		const { gs, ws } = await miner(() => rolls.shift() ?? 0.5);
+		await mine(gs, ws, 4);
 		expect((await eco.wallet("a")).gems).toBe(6);
-		expect(last(ws, "wallet")!.gems).toBe(6);
+		expect(await eco.inventory("a")).not.toEqual({});
+	});
+
+	test("the daily cap holds under concurrent claims", async () => {
+		const day = "2026-11-17";
+		const got = await Promise.all(Array.from({ length: 12 }, () => store.claimOreGem("z", day, 5)));
+		expect(got.filter((k) => k !== null).sort()).toEqual([1, 2, 3, 4, 5]);
+		expect(await store.claimOreGem("z", "2026-11-18", 5)).toBe(1);
 	});
 
 	test("refillEnergy fills a live session, or the saved state offline", async () => {
@@ -1056,5 +1110,10 @@ describe("gems and energy", () => {
 		expect(saved!.energy).toBe(MAX_ENERGY);
 		const ws2 = await join(gs, "u1");
 		expect(last(ws2, "wallet")!.energy).toBe(MAX_ENERGY);
+
+		// No saved state: nothing to refill, so the shop refuses before charging
+		expect(await gs.hasPlayed("ghost")).toBe(false);
+		expect(await gs.refillEnergy("ghost")).toBe(false);
+		expect(await gs.hasPlayed("u1")).toBe(true);
 	});
 });

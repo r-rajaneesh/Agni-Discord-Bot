@@ -3,8 +3,12 @@ import CommandBuilder from "@Builders/CommandBuilder";
 import { GEM_PRICES, PRODUCTS, productById } from "../../game/data/products";
 import type ClientManager from "@Managers/ClientManager";
 
+// Marks the Farm Pass's free refill as used for a UTC day
+const passKey = (userId: string) => `passrefill:${userId}:${new Date().toISOString().slice(0, 10)}`;
+
 async function shopView(client: ClientManager, userId: string, status = "") {
 	const [wallet, pass] = await Promise.all([client.economy.wallet(userId), client.payments.hasPass(userId)]);
+	const free = pass && !(await client.economy.hasEntry(passKey(userId)));
 	const container = new Discord.ContainerBuilder()
 		.setAccentColor(client.config.colours.blurple)
 		.addTextDisplayComponents(
@@ -48,7 +52,7 @@ async function shopView(client: ClientManager, userId: string, status = "") {
 		new Discord.ActionRowBuilder<Discord.ButtonBuilder>().addComponents(
 			new Discord.ButtonBuilder()
 				.setCustomId("shop:spend:energy")
-				.setLabel(pass ? "Energy refill (free daily with Pass)" : `Energy refill · ${GEM_PRICES.energyRefill} 💎`)
+				.setLabel(free ? "Energy refill (free today with Pass)" : `Energy refill · ${GEM_PRICES.energyRefill} 💎`)
 				.setEmoji({ name: "⚡" })
 				.setStyle(Discord.ButtonStyle.Success),
 		),
@@ -56,30 +60,36 @@ async function shopView(client: ClientManager, userId: string, status = "") {
 	return { components: [container], flags: Discord.MessageFlags.IsComponentsV2 } as const;
 }
 
-// Pays for an energy refill (the Pass's free daily one first, else gems), then fills energy in the game
+// Uses the Pass's free daily refill when it is left, else 10 gems, and fills energy in the game
 async function refill(client: ClientManager, userId: string): Promise<string> {
 	const game = client.gameServer;
 	if (!game) return "The game is not running right now. Try again later.";
-	let paid: "pass" | "gems" | null = null;
-	if (await client.payments.hasPass(userId)) {
-		// An empty ledger entry with a per-day key marks the free refill as used
-		const day = new Date().toISOString().slice(0, 10);
-		const r = await client.economy.transact([], { reason: "pass_refill", idempotencyKey: `passrefill:${userId}:${day}` });
-		if (r.ok && !r.duplicate) paid = "pass";
+	// Checked before charging: there is no energy to fill until the player has played
+	if (!(await game.hasPlayed(userId))) return "Open the Activity once first.";
+	const failed = "Couldn't refill your energy. Try again.";
+	const key = passKey(userId);
+	if ((await client.payments.hasPass(userId)) && !(await client.economy.hasEntry(key))) {
+		// Refill first; the empty ledger entry then marks the free refill as used, so a failure never uses it up
+		try {
+			if (!(await game.refillEnergy(userId))) return "Open the Activity once first.";
+		} catch (e) {
+			client.log.error("[SHOP] energy refill failed", e);
+			return failed;
+		}
+		await client.economy.transact([], { reason: "pass_refill", idempotencyKey: key });
+		return "⚡ Energy refilled (Farm Pass daily refill).";
 	}
-	if (!paid) {
-		const r = await client.economy.transact([{ userId, gems: -GEM_PRICES.energyRefill }], { reason: "gem_energy_refill" });
-		if (!r.ok) return "Not enough gems.";
-		paid = "gems";
-	}
+	const r = await client.economy.transact([{ userId, gems: -GEM_PRICES.energyRefill }], { reason: "gem_energy_refill" });
+	if (!r.ok) return "Not enough gems.";
+	let done = false;
 	try {
-		await game.refillEnergy(userId);
+		done = await game.refillEnergy(userId);
 	} catch (e) {
 		client.log.error("[SHOP] energy refill failed", e);
-		if (paid === "gems") await client.economy.transact([{ userId, gems: GEM_PRICES.energyRefill }], { reason: "gem_energy_refill_refund" });
-		return "Couldn't refill your energy. Try again.";
 	}
-	return paid === "pass" ? "⚡ Energy refilled (Farm Pass daily refill)." : `⚡ Energy refilled for ${GEM_PRICES.energyRefill} 💎.`;
+	if (done) return `⚡ Energy refilled for ${GEM_PRICES.energyRefill} 💎.`;
+	await client.economy.transact([{ userId, gems: GEM_PRICES.energyRefill }], { reason: "gem_energy_refill_refund" });
+	return failed;
 }
 
 export default new CommandBuilder({

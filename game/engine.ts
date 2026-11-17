@@ -81,8 +81,8 @@ export interface TActionResult {
 	take?: Record<string, number>;
 	/** Items the action produces; the caller credits them after apply() */
 	give?: Record<string, number>;
-	/** Gems the action finds; the caller credits them with `give` */
-	gems?: number;
+	/** A rock was mined; the server rolls the rare gem drop */
+	mined?: boolean;
 	energyCost?: number;
 	menu?: "shop";
 	/** The player stepped into a portal; the caller moves them to this instance kind */
@@ -263,11 +263,6 @@ function oreRoll(x: number, y: number, day: number) {
 	return "stone";
 }
 
-/** A 1% chance per mined rock of finding a gem, deterministic per tile and day like the ore roll */
-export function gemRoll(x: number, y: number, day: number) {
-	return Math.abs(Math.imul(x * 2654435761 ^ y * 40503 ^ day * 97531, 0x85ebca6b)) % 100 === 0;
-}
-
 const READ_ONLY = "You can only build on your own land.";
 const NOT_YOURS = "This isn't your land.";
 
@@ -410,12 +405,11 @@ export function use(
 		if (!world && !owner) return { ok: false, msg: NOT_YOURS };
 		const ore = oreRoll(x, y, day);
 		const qty = ore === "stone" ? 2 : 1;
-		const gem = gemRoll(x, y, day);
 		return needEnergy(4, {
 			ok: true,
-			msg: `⚒️ +${qty} ${ITEMS[ore]?.name}${gem ? " and 1 💎!" : ""}`,
+			msg: `⚒️ +${qty} ${ITEMS[ore]?.name}`,
 			give: { [ore]: qty },
-			...(gem ? { gems: 1 } : {}),
+			mined: true,
 			changedTiles: [key],
 			apply: clear(ROCK_REGROW_MS),
 		});

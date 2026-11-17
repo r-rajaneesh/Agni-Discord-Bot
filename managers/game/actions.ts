@@ -23,6 +23,11 @@ import type { TLeg, TMeta } from "../EconomyManager";
 export const MAX_ACTIONS_PER_SEC = 6;
 
 export const DAILY_GEMS = 5;
+/** Chance of a gem per ore mined, and the most a player finds by mining in a UTC day */
+export const ORE_GEM_CHANCE = 0.01;
+export const ORE_GEMS_PER_DAY = 5;
+/** One payment link per product per player in this window */
+export const LINK_COOLDOWN_MS = 30_000;
 
 const ACTIONS = ["use", "equip", "sleep", "travel", "buy", "sell", "unlock", "buyProduct"] as const;
 export type TAction = Extract<TClientMsg, { t: (typeof ACTIONS)[number] }>;
@@ -32,6 +37,9 @@ export const isAction = (m: TClientMsg): m is TAction => (ACTIONS as readonly st
 export interface TActionCtx {
 	deps: TGameServerDeps;
 	now(): number;
+	rand(): number;
+	/** `<userId>:<productId>` → when its payment link was last sent */
+	linkSentAt: Map<string, number>;
 	send(ws: TSocket, msg: TServerMsg): void;
 	toast(s: TSession, msg: string, ok: boolean): void;
 	run<T>(rt: TRuntime, fn: () => T | Promise<T>): Promise<T>;
@@ -96,6 +104,8 @@ async function transact(ctx: TActionCtx, legs: TLeg[], meta: TMeta): Promise<{ o
 	}
 }
 
+const utcDay = (now: number) => new Date(now).toISOString().slice(0, 10);
+
 const negate = (items: Record<string, number>) => Object.fromEntries(Object.entries(items).map(([id, n]) => [id, -n]));
 
 // ---------- use ----------
@@ -140,27 +150,21 @@ async function applyUse(ctx: TActionCtx, s: TSession, rt: TRuntime, r: TActionRe
 	if (r.take) {
 		const t = await transact(ctx, [{ userId, items: negate(r.take) }], meta);
 		if (!t.ok) return ctx.toast(s, t.message, false);
-		if (!ctx.here(s, rt)) {
-			const back = await transact(ctx, [{ userId, items: r.take }], { reason: "use_refund", ref: inst.id });
-			if (!back.ok) ctx.deps.log.error(`[GAME] refund after a left use failed for ${userId}`);
-			return;
-		}
+		// Paid for: the change goes ahead even if the player left meanwhile (the instance stays loaded while queued)
 	}
 	r.apply?.();
 	s.dirty = true;
 	const keys = r.changedTiles ?? [];
 	// Lobby tiles live in memory only
 	if (keys.length && inst.kind === "land") await ctx.deps.store.saveTiles(inst, keys).catch((e) => ctx.deps.log.error("[GAME] saving tiles failed", e));
-	if (r.give || r.gems) {
-		const leg: TLeg = { userId };
-		if (r.give) leg.items = r.give;
-		if (r.gems) leg.gems = r.gems;
-		const t = await transact(ctx, [leg], meta);
+	if (r.give) {
+		const t = await transact(ctx, [{ userId, items: r.give }], meta);
 		if (!t.ok) {
-			ctx.deps.log.error(`[GAME] crediting ${JSON.stringify(leg)} failed: ${t.message}`);
+			ctx.deps.log.error(`[GAME] crediting ${JSON.stringify(r.give)} to ${userId} failed: ${t.message}`);
 			ctx.toast(s, "Couldn't add that to your inventory.", false);
 		}
 	}
+	if (r.mined) await oreGem(ctx, s);
 	// The tiles changed whether or not the actor is still here, so observers always get them
 	if (keys.length) ctx.tilesChanged(inst, keys);
 	if (r.msg && ctx.here(s, rt)) ctx.toast(s, r.msg, true);
@@ -320,9 +324,24 @@ async function unlock(ctx: TActionCtx, s: TSession, cx: number, cy: number) {
 
 /** 5 gems on the first hello of each UTC day */
 export async function dailyGems(ctx: TActionCtx, s: TSession) {
-	const day = new Date(ctx.now()).toISOString().slice(0, 10);
+	const day = utcDay(ctx.now());
 	const r = await transact(ctx, [{ userId: s.userId, gems: DAILY_GEMS }], { reason: "daily_gems", idempotencyKey: `daily-gems:${s.userId}:${day}` });
 	if (r.ok && !r.duplicate) ctx.toast(s, `Daily reward: +${DAILY_GEMS} 💎`, true);
+}
+
+/** The rare gem from mining: a random roll, at most ORE_GEMS_PER_DAY per player per UTC day */
+async function oreGem(ctx: TActionCtx, s: TSession) {
+	if (ctx.rand() >= ORE_GEM_CHANCE) return;
+	const day = utcDay(ctx.now());
+	try {
+		const k = await ctx.deps.store.claimOreGem(s.userId, day, ORE_GEMS_PER_DAY);
+		if (k === null) return;
+		// Keyed by the claimed slot, so a retry of the same slot never pays twice
+		const t = await transact(ctx, [{ userId: s.userId, gems: 1 }], { reason: "ore_gem", idempotencyKey: `ore-gem:${s.userId}:${day}:${k}` });
+		if (t.ok && !t.duplicate) ctx.toast(s, "💎 You found a gem!", true);
+	} catch (e) {
+		ctx.deps.log.error("[GAME] ore gem failed", e);
+	}
 }
 
 // ---------- real money ----------
@@ -337,17 +356,26 @@ async function buyProduct(ctx: TActionCtx, s: TSession, productId: string) {
 	if (!product || product.kind !== "pass") return ctx.toast(s, "That isn't for sale.", false);
 	const { payments, dm, log } = ctx.deps;
 	if (!payments.razorpayEnabled) return ctx.toast(s, "Purchases are not available right now.", false);
+	const key = `${s.userId}:${product.id}`;
+	const now = ctx.now();
+	const sent = ctx.linkSentAt.get(key);
+	if (sent !== undefined && now - sent < LINK_COOLDOWN_MS) return ctx.toast(s, "Check your DMs — a link was sent recently.", false);
+	// Claimed before the awaits, so a double click sends one link
+	ctx.linkSentAt.set(key, now);
+	if (ctx.linkSentAt.size > 1000) for (const [k, at] of ctx.linkSentAt) if (now - at >= LINK_COOLDOWN_MS) ctx.linkSentAt.delete(k);
 	let url: string;
 	try {
 		url = await payments.createRazorpayLink(s.userId, product);
 	} catch (e) {
 		log.error("[GAME] payment link failed", e);
+		ctx.linkSentAt.delete(key);
 		return ctx.toast(s, "Couldn't create a payment link. Try again later.", false);
 	}
 	try {
 		await dm(s.userId, `${product.emoji} **${product.name}**: pay here within 30 minutes: ${url}\nYour item appears in game as soon as payment completes.`);
 	} catch (e) {
 		log.warn("[GAME] payment link DM failed", e);
+		ctx.linkSentAt.delete(key);
 		return ctx.toast(s, "Couldn't DM you. Allow DMs from the bot and try again.", false);
 	}
 	ctx.toast(s, "Check your DMs to pay.", true);

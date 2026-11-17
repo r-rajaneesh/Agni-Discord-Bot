@@ -173,6 +173,11 @@ export default class EconomyManager {
 		}
 	}
 
+	/** True once an entry with this idempotency key exists */
+	public async hasEntry(idempotencyKey: string) {
+		return !!(await LedgerEntry.exists({ idempotencyKey }));
+	}
+
 	public async wallet(userId: string) {
 		const w = await Wallet.findOne({ userId }).lean();
 		return { coins: w?.coins ?? 0, gems: w?.gems ?? 0 };

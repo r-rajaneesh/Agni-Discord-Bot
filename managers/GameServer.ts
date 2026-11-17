@@ -92,6 +92,8 @@ export interface TGameServerDeps {
 	dm: (userId: string, content: string) => Promise<void>;
 	log: TLog;
 	now?: () => number;
+	/** Random rolls (the ore gem); tests make them deterministic */
+	rand?: () => number;
 	/** False in tests, which call tick() themselves */
 	autoTick?: boolean;
 }
@@ -130,6 +132,8 @@ export default class GameServer {
 		this.ctx = {
 			deps,
 			now: this.now,
+			rand: deps.rand ?? Math.random,
+			linkSentAt: new Map(),
 			send: (ws, msg) => this.send(ws, msg),
 			toast: (s, msg, ok) => this.toast(s, msg, ok),
 			run: (rt, fn) => this.run(rt, fn),
@@ -633,19 +637,25 @@ export default class GameServer {
 		}
 	}
 
-	/** Fills the player's energy: the live session's, else the saved state (the shop's refill) */
-	refillEnergy(userId: string): Promise<void> {
+	/** True when the player is online or has a saved state, so energy can be refilled */
+	async hasPlayed(userId: string): Promise<boolean> {
+		return this.sessions.has(userId) || (await this.deps.store.hasPlayer(userId));
+	}
+
+	/** Fills the player's energy: the live session's, else the saved state (the shop's refill). False when there is neither. */
+	refillEnergy(userId: string): Promise<boolean> {
 		return this.forUser(userId, async () => {
 			const s = this.sessions.get(userId);
 			if (s) {
 				s.player.energy = MAX_ENERGY;
 				s.player.lastEnergyAt = this.now();
 				s.dirty = true;
-				return this.pushWallet(userId);
+				await this.pushWallet(userId);
+				return true;
 			}
 			// After the save of a session that just closed, so that save can't undo the refill
 			await this.saves;
-			await this.deps.store.setEnergy(userId, MAX_ENERGY, this.now());
+			return this.deps.store.setEnergy(userId, MAX_ENERGY, this.now());
 		});
 	}
 

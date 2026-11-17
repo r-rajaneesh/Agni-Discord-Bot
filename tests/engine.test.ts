@@ -18,7 +18,6 @@ import {
 	cropStage,
 	enter,
 	facedTile,
-	gemRoll,
 	simulate,
 	sleep,
 	terrainAt,
@@ -317,32 +316,14 @@ describe("resources on your land", () => {
 		expect(terrainAt(inst, t.x, t.y, T0 + 3 * DAY_MS)).toBe(T.tree);
 	});
 
-	test("gem roll is deterministic per tile and day, about 1%", () => {
-		let hits = 0;
-		for (let y = 0; y < 100; y++) for (let x = 0; x < 100; x++) if (gemRoll(x, y, 1)) hits++;
-		expect(hits).toBeGreaterThan(50);
-		expect(hits).toBeLessThan(150);
-		for (let i = 0; i < 50; i++) expect(gemRoll(i, -i, 3)).toBe(gemRoll(i, -i, 3));
-		// A different day rolls again
-		const day1 = Array.from({ length: 2000 }, (_, i) => gemRoll(i, 7, 1));
-		const day2 = Array.from({ length: 2000 }, (_, i) => gemRoll(i, 7, 2));
-		expect(day1).not.toEqual(day2);
-	});
-
-	test("mining a rock whose gem roll hits also gives 1 gem", () => {
+	test("only mining a rock is marked mined (the server rolls gems)", () => {
 		const { inst, p } = land();
 		p.equipped = "pickaxe";
-		const t = standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.rock, -15, -15, 47, 47);
-		// The same rock on a day the roll hits and on one it misses
-		const days = Array.from({ length: 2000 }, (_, i) => i + 1);
-		const hit = days.find((d) => gemRoll(t.x, t.y, d))!;
-		const miss = days.find((d) => !gemRoll(t.x, t.y, d))!;
-		expect(use(inst, "u1", T0 + (hit - 1) * DAY_MS, {})).toMatchObject({ ok: true, gems: 1 });
-		expect(use(inst, "u1", T0 + (miss - 1) * DAY_MS, {}).gems).toBeUndefined();
-		// Chopping never gives gems
+		standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.rock, -15, -15, 47, 47);
+		expect(use(inst, "u1", T0, {})).toMatchObject({ ok: true, mined: true });
 		p.equipped = "axe";
 		standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.tree, -15, -15, 47, 47);
-		for (const d of days.slice(0, 300)) expect(use(inst, "u1", T0 + (d - 1) * DAY_MS, {}).gems).toBeUndefined();
+		expect(use(inst, "u1", T0, {}).mined).toBeUndefined();
 	});
 
 	test("mined rocks give ore and respawn after 2 days", () => {

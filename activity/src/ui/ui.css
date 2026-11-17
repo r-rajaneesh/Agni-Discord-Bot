@@ -472,13 +472,89 @@
 	white-space: nowrap;
 }
 
-/* ---------- chat hook (Task 16) ---------- */
-.ui .chat-input {
+/* ---------- chat ---------- */
+/* Above the hotbar's row and clear of the stick, which sits in the bottom-left corner of the touch strip */
+.ui .chat {
 	position: absolute;
-	left: var(--gap);
+	left: calc(var(--gap) + env(safe-area-inset-left));
 	bottom: calc(var(--gap) + var(--touch-h) + 60px + env(safe-area-inset-bottom));
-	width: min(360px, calc(100% - 2 * var(--gap)));
+	width: min(340px, calc(100% - 2 * var(--gap)));
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	z-index: 1;
+}
+.ui .chat-toggle {
+	align-self: flex-start;
+	background: var(--chip);
+	order: 3;
+	display: none;
+}
+.ui .chat-unread {
+	border-color: var(--gold);
+	box-shadow: 0 0 0 2px rgba(242, 193, 78, 0.35);
+}
+.ui .chat-log {
+	order: 1;
+	max-height: 132px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 4px 8px;
+	background: var(--chip);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	font-size: 13px;
+	pointer-events: auto;
+	user-select: text;
+	-webkit-user-select: text;
+}
+.ui .chat-log:empty {
+	display: none;
+}
+.ui .chat-collapsed .chat-log {
+	display: none;
+}
+.ui .chat-line {
+	overflow-wrap: anywhere;
+}
+.ui .chat-local {
+	color: #fff;
+}
+.ui .chat-private {
+	color: var(--good);
+}
+.ui .chat-global {
+	color: var(--gold);
+}
+.ui .chat-from {
+	font-weight: 600;
+}
+.ui .chat-input {
+	order: 2;
 	box-sizing: border-box;
+	width: 100%;
+	min-height: 32px;
+	padding: 4px 8px;
+	font: inherit;
+	color: var(--ink);
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	user-select: text;
+	-webkit-user-select: text;
+}
+.ui .chat-input:focus-visible {
+	outline: 2px solid var(--gold);
+	outline-offset: 1px;
+}
+@media (pointer: coarse) {
+	/* The collapse button only matters on phones, where the log would otherwise cover the world */
+	.ui .chat-toggle {
+		display: inline-block;
+	}
+	.ui .chat-log {
+		max-height: 96px;
+	}
 }
 
 /* ---------- touch controls ---------- */

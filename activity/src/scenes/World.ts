@@ -3,7 +3,7 @@ import Phaser from "phaser";
 import { clock, darkness } from "@game/engine";
 import { INTERP_DELAY_MS, InterpBuffer } from "../interp";
 import type { ClientState, THints } from "../state";
-import { TILE, registerTextures } from "../textures";
+import { SCALE, TILE, animalTexture, registerTextures } from "../textures";
 import { ChunkRenderer } from "./chunkRenderer";
 import { PlayerSprite } from "./playerSprite";
 
@@ -15,12 +15,19 @@ interface TOther {
 	buf: InterpBuffer;
 }
 
+interface TWild {
+	sprite: Phaser.GameObjects.Image;
+	buf: InterpBuffer;
+	key: string;
+}
+
 export class World extends Phaser.Scene {
 	private ready = false;
 	private chunks!: ChunkRenderer;
 	private night!: Phaser.GameObjects.Rectangle;
 	private me: PlayerSprite | null = null;
 	private others = new Map<string, TOther>();
+	private animals = new Map<number, TWild>();
 
 	constructor(private state: ClientState) {
 		super("world");
@@ -50,6 +57,7 @@ export class World extends Phaser.Scene {
 			if (h.redrawChunks) this.chunks.redrawAll(now);
 			if (h.redrawTiles) this.chunks.redrawTiles(h.redrawTiles, now);
 			for (const id of h.players ?? []) this.syncOther(id);
+			for (const id of h.animals ?? []) this.syncAnimal(id);
 		}
 	}
 
@@ -70,6 +78,10 @@ export class World extends Phaser.Scene {
 			const p = o.buf.sample(at);
 			if (p) o.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
 		}
+		for (const a of this.animals.values()) {
+			const p = a.buf.sample(at);
+			if (p) a.sprite.setPosition(p.x * TILE, p.y * TILE).setDepth(p.y);
+		}
 		const inst = this.state.instance;
 		if (!inst) return;
 		const now = Date.now();
@@ -82,6 +94,8 @@ export class World extends Phaser.Scene {
 		this.chunks.clear();
 		for (const o of this.others.values()) o.sprite.destroy();
 		this.others.clear();
+		for (const a of this.animals.values()) a.sprite.destroy();
+		this.animals.clear();
 		this.me?.destroy();
 		this.me = null;
 		const you = this.state.you;
@@ -92,6 +106,7 @@ export class World extends Phaser.Scene {
 			this.cameras.main.centerOn(this.me.x, this.me.y);
 		}
 		for (const id of this.state.players.keys()) this.syncOther(id);
+		for (const id of this.state.animals.keys()) this.syncAnimal(id);
 	}
 
 	private syncOther(id: string): void {
@@ -108,5 +123,25 @@ export class World extends Phaser.Scene {
 			this.others.set(id, o);
 		} else o.sprite.setView(view);
 		o.buf.push(performance.now(), view.x, view.y);
+	}
+
+	// Animals are drawn 100 ms behind, like other players, and removed when they leave the ents list
+	private syncAnimal(id: number): void {
+		const view = this.state.animals.get(id);
+		let a = this.animals.get(id);
+		if (!view) {
+			a?.sprite.destroy();
+			this.animals.delete(id);
+			return;
+		}
+		const key = animalTexture(this.textures, view.kind, view.facing);
+		if (!a) {
+			a = { sprite: this.add.image(view.x * TILE, view.y * TILE, key).setScale(SCALE).setDepth(view.y), buf: new InterpBuffer(), key };
+			this.animals.set(id, a);
+		} else if (a.key !== key) {
+			a.sprite.setTexture(key);
+			a.key = key;
+		}
+		a.buf.push(performance.now(), view.x, view.y);
 	}
 }

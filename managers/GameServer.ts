@@ -2,15 +2,18 @@ import type { ServerWebSocket } from "bun";
 import { chunkOf, dropLand } from "../game/chunks";
 import { ITEMS, STARTER_COINS, STARTER_KIT } from "../game/data/items";
 import {
+	HIT_RADIUS,
 	MAX_ENERGY,
 	TICK_MS,
 	currentEnergy,
 	enter,
+	facedPoint,
 	simulate,
 	type TDir,
 	type TInstance,
 	type TPlayerState,
 } from "../game/engine";
+import { hitAnimal, type TAnimal } from "../game/entities";
 import {
 	PROTOCOL_VERSION,
 	parseClientMessage,
@@ -25,6 +28,7 @@ import type EconomyManager from "./EconomyManager";
 import { landIdOf, type TLocation, type TStoredPlayer } from "./InstanceStore";
 import type InstanceStore from "./InstanceStore";
 import type PaymentManager from "./PaymentManager";
+import Wildlife from "./game/animals";
 import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
 import Lobbies, { LOBBY_CAP } from "./game/lobbies";
 
@@ -55,6 +59,8 @@ interface TRuntime {
 	/** When the last player left; null while occupied */
 	emptyAt: number | null;
 	changed: TTileIndex;
+	/** Wild animals; lobbies only */
+	wild: Wildlife | null;
 }
 
 interface TSession {
@@ -72,6 +78,8 @@ interface TSession {
 	home: { id: string; name: string } | null;
 	/** Last position in the open world, used when arriving from private land */
 	lastWorld: { x: number; y: number; facing: TDir } | null;
+	/** The last `ents` list sent, as JSON, so an unchanged list is not sent again */
+	ents: string;
 }
 
 interface TConn {
@@ -296,6 +304,7 @@ export default class GameServer {
 			visible: new Set(),
 			home,
 			lastWorld,
+			ents: "[]",
 		};
 		conn.ws.data.userId = userId;
 		conn.state = "ready";
@@ -320,7 +329,8 @@ export default class GameServer {
 	// ---------- instances ----------
 
 	private runtime(inst: TInstance): TRuntime {
-		const rt: TRuntime = { inst, sessions: new Set(), queue: Promise.resolve(), busy: 0, emptyAt: this.now(), changed: new Map() };
+		const wild = inst.kind === "world" ? new Wildlife(inst) : null;
+		const rt: TRuntime = { inst, sessions: new Set(), queue: Promise.resolve(), busy: 0, emptyAt: this.now(), changed: new Map(), wild };
 		for (const key of inst.tiles.keys()) indexTile(rt.changed, inst.tiles, key);
 		this.instances.set(inst.id, rt);
 		return rt;
@@ -384,6 +394,8 @@ export default class GameServer {
 		s.player = enter(rt.inst, base, at);
 		s.rt = rt;
 		s.input = null;
+		// The client drops its animals on welcome
+		s.ents = "[]";
 		rt.sessions.add(s);
 		rt.emptyAt = null;
 		s.chunk = chunkOf(s.player.x, s.player.y);
@@ -471,6 +483,7 @@ export default class GameServer {
 				movers.push(s);
 			}
 			for (const s of movers) this.moved(s);
+			this.tickAnimals(now);
 			this.sweep(now);
 			if (now - this.lastFlush >= FLUSH_MS) this.flush();
 		} catch (e) {
@@ -504,6 +517,57 @@ export default class GameServer {
 				this.send(s.ws, { t: "left", userId: o.userId });
 			}
 		}
+	}
+
+	// Simulates animals in active chunks, then sends each lobby player the living animals in their AOI when that changed
+	private tickAnimals(now: number) {
+		for (const rt of this.instances.values()) {
+			if (!rt.wild) continue;
+			rt.wild.tick([...rt.sessions].map((s) => ({ x: s.player.x, y: s.player.y, chunk: s.chunk })), now, TICK_MS);
+			for (const s of rt.sessions) {
+				const ents = rt.wild.visible(s.chunk);
+				const json = JSON.stringify(ents);
+				if (json === s.ents) continue;
+				s.ents = json;
+				this.send(s.ws, { t: "ents", ents });
+			}
+		}
+	}
+
+	/** Loaded animals of an instance, dead ones included (tests and later tasks) */
+	animals(instanceId: string): TAnimal[] {
+		return this.instances.get(instanceId)?.wild?.all() ?? [];
+	}
+
+	/**
+	 * Hits an animal in front of the player and credits the drops when it dies.
+	 * Energy is charged by the engine's use(), which finds the animal.
+	 */
+	async hitAnimal(userId: string, animalId: number): Promise<{ ok: boolean; msg: string; drops?: Record<string, number> }> {
+		const s = this.sessions.get(userId);
+		if (!s?.rt.wild) return { ok: false, msg: "There's nothing to hit here." };
+		const rt = s.rt;
+		const wild = rt.wild!;
+		const r = await this.run(rt, async () => {
+			if (this.sessions.get(userId) !== s || s.rt !== rt) return { ok: false, msg: "You are not here." };
+			const a = wild.find(animalId);
+			const f = facedPoint(s.player);
+			if (!a || a.state === "dead" || Math.hypot(a.x - f.x, a.y - f.y) > HIT_RADIUS) return { ok: false, msg: "Nothing to hit here." };
+			const hit = hitAnimal(a, this.now());
+			if (!hit.killed || !hit.drops) return { ok: true, msg: `You hit the ${a.kind}.` };
+			const drops = hit.drops;
+			const t = await this.deps.eco
+				.transact([{ userId, items: drops }], { reason: "slaughter", ref: a.kind })
+				.catch((e: unknown) => ({ ok: false as const, message: String(e) }));
+			if (!t.ok) {
+				this.deps.log.error(`[GAME] slaughter credit failed for ${userId}: ${t.message}`);
+				return { ok: false, msg: "Couldn't collect the drops." };
+			}
+			const got = Object.entries(drops).map(([id, n]) => `${n} ${ITEMS[id]?.name ?? id}`).join(", ");
+			return { ok: true, msg: `🍖 +${got}`, drops };
+		});
+		if (r.drops) await this.pushWallet(userId);
+		return r;
 	}
 
 	// Unloads empty lands after 5 minutes and closes empty lobbies (except #1) after 60 s

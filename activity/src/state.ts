@@ -1,12 +1,20 @@
 // Client mirror of what the server has told us. A pure reducer: the scene reacts to the hints apply() returns.
 import { createLand, createLobby, type TInstance } from "@game/engine";
-import type { TPlayerView, TServerMsg, TSnapshot } from "@game/protocol";
+import type { TDir, TPlayerView, TServerMsg, TSnapshot } from "@game/protocol";
 
 export interface TWallet {
 	coins: number;
 	gems: number;
 	inventory: Record<string, number>;
 	energy: number;
+}
+
+export interface TAnimalView {
+	id: number;
+	kind: string;
+	x: number;
+	y: number;
+	facing: TDir;
 }
 
 export interface THints {
@@ -18,6 +26,8 @@ export interface THints {
 	reset?: boolean;
 	/** Other players that joined, moved or left */
 	players?: string[];
+	/** Animals that appeared, moved or left */
+	animals?: number[];
 }
 
 // The server builds the same instance, so terrainAt gives the same answer on both sides
@@ -37,6 +47,8 @@ export class ClientState {
 	ack = 0;
 	/** Other players, by userId */
 	players = new Map<string, TPlayerView>();
+	/** Living animals in our AOI, by id */
+	animals = new Map<number, TAnimalView>();
 	wallet: TWallet = { coins: 0, gems: 0, inventory: {}, energy: 0 };
 	prices: Record<string, { buy: number; sell: number }> = {};
 
@@ -52,6 +64,7 @@ export class ClientState {
 				this.ack = 0;
 				this.players = new Map(s.players.filter((p) => p.userId !== m.userId).map((p) => [p.userId, { ...p }]));
 				this.prices = s.prices;
+				this.animals.clear();
 				return { reset: true, redrawChunks: true, players: [...this.players.keys()] };
 			}
 			case "you": {
@@ -86,6 +99,13 @@ export class ClientState {
 				if (!this.instance) return {};
 				this.instance.unlocked = new Set(m.unlocked);
 				return { redrawChunks: true };
+			case "ents": {
+				// The full list in AOI: an animal missing from it has left or died
+				const ids = new Set(this.animals.keys());
+				this.animals = new Map(m.ents.map(([id, kind, x, y, facing]) => [id, { id, kind, x, y, facing }]));
+				for (const id of this.animals.keys()) ids.add(id);
+				return { animals: [...ids] };
+			}
 			case "wallet":
 				this.wallet = { coins: m.coins, gems: m.gems, inventory: m.inventory, energy: m.energy };
 				return {};

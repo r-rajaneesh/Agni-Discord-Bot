@@ -84,7 +84,7 @@
     | { t: "buy"; item: string; qty: number }
     | { t: "sell"; item: string; qty: number | "all" }
     | { t: "unlock"; cx: number; cy: number }
-    | { t: "buyGems"; productId: string }
+    | { t: "buyProduct"; productId: string }            // real-money item (Razorpay link DMed by the bot); renamed from buyGems in Task 10
     | { t: "lobbies" }                                   // request the lobby list
     | { t: "switchLobby"; lobby: number }
     | { t: "emote"; id: string }
@@ -424,7 +424,17 @@
 
 ---
 
-### Task 10: GameServer actions: use, equip, sleep, travel, shop, unlock, gems
+### Task 10: GameServer actions: use, equip, sleep, travel, shop, unlock, real-money items
+
+> **Owner directive (2026-11-17), overriding the text below:** gems are **never sold for real money**. Gems are earned in-game only. Real money (Razorpay links DMed by the bot) buys items directly: emote packs, the Farm Pass, and later skins, themes and land. In this task:
+> - Rename `buyGems` to `buyProduct` (protocol, server and tests).
+> - Remove the `gems_*` products from `game/data/products.ts`, and remove gem packs from the bot's `/shop` (`commands/economy/shop.ts`).
+> - Restore the shop's gem-paid energy refill through `GameServer.refillEnergy(userId)` (gems are earned).
+> - Add Phase 1 gem sources:
+>   - a daily first-session reward of 5 gems (idempotency key `daily-gems:<userId>:<YYYY-MM-DD UTC>`)
+>   - a 1% chance of 1 gem per ore mined (deterministic per tile and day, like the ore roll)
+> - The DM text says the **item** arrives in game.
+> - Route `use` → engine `use` → `hitAnimalId` → `GameServer.hitAnimal` (from Task 17) behind the `MAX_ACTIONS_PER_SEC = 6` limiter. Never expose `hitAnimal` as a client message.
 
 **Files:**
 - Modify: `managers/GameServer.ts`
@@ -433,7 +443,7 @@
 
 **Interfaces:**
 - Consumes: Task 9 internals; `EconomyManager.npcTrade`, `npcPrices`, `inventory`, `wallet`; `PaymentManager.createRazorpayLink`; `productById`.
-- Produces handlers for `use`, `equip`, `sleep`, `travel`, `buy`, `sell`, `unlock` and `buyGems`. The `use` flow is ported from `GameManager.apply`: debit `take`, `apply()`, `saveTiles`, credit `give`. On success it sends `tiles` to everyone in the instance and `wallet` to the actor. On failure it sends a `toast`.
+- Produces handlers for `use`, `equip`, `sleep`, `travel`, `buy`, `sell`, `unlock` and `buyProduct`. The `use` flow is ported from `GameManager.apply`: debit `take`, `apply()`, `saveTiles`, credit `give`. On success it sends `tiles` to everyone in the instance and `wallet` to the actor. On failure it sends a `toast`.
 - [ ] **Step 1: Failing tests:**
   - `till, plant, water, harvest on own land` end-to-end over messages, with inventory and tile changes asserted.
   - `use is rate limited to 6/s`.
@@ -441,12 +451,12 @@
   - `travel only from a portal tile` (or from the house door): otherwise a toast.
   - `buy only while facing a shop door`: otherwise toast `"Visit the General Store to buy."`.
   - `unlock sends chunks to everyone on the land and wallet to the owner`.
-  - `buyGems DMs a Razorpay link and toasts "Check your DMs…"`: the `dm` stub receives a string containing the link. With `razorpayEnabled=false` → toast `"Purchases are not available right now."`.
+  - `buyProduct DMs a Razorpay link and toasts "Check your DMs…"`: the `dm` stub receives a string containing the link. With `razorpayEnabled=false` → toast `"Purchases are not available right now."`.
   - `pushWallet sends wallet to an online player and is a no-op offline`.
 - [ ] **Step 2: Run** `bun test tests/game-server.test.ts`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The DM content is `` `${product.emoji} **${product.name}**: pay here within 30 minutes: ${url}\nYour gems appear in game as soon as payment completes.` ``.
+- [ ] **Step 3: Implement.** The DM content is `` `${product.emoji} **${product.name}**: pay here within 30 minutes: ${url}\nYour item appears in game as soon as payment completes.` ``.
 - [ ] **Step 4: Run** `bun test`. Expected: all PASS except the old `tests/game.test.ts` and `tests/commands.test.ts` cases for the PNG game, which Task 15 deletes or updates.
-- [ ] **Step 5: Commit** `feat(game): land actions, shop, chunk unlock and gem purchase over websocket`.
+- [ ] **Step 5: Commit** `feat(game): land actions, shop, chunk unlock and item purchases over websocket`.
 
 ---
 
@@ -533,7 +543,7 @@
 **Files:**
 - Create: `activity/src/input.ts` (keyboard and touch)
 - Create: `activity/src/predict.ts`
-- Create: `activity/src/ui/` (`hud.ts`, `hotbar.ts`, `toast.ts`, `shop.ts`, `inventory.ts`, `unlock.ts`, `gems.ts`): plain DOM overlays styled in `activity/src/ui/ui.css`
+- Create: `activity/src/ui/` (`hud.ts`, `hotbar.ts`, `toast.ts`, `shop.ts`, `inventory.ts`, `unlock.ts`, `store.ts`): plain DOM overlays styled in `activity/src/ui/ui.css`
 - Test: `activity/src/predict.test.ts`
 
 **Interfaces:**
@@ -556,11 +566,11 @@
   - `Enter` focuses the chat box, so movement keys are ignored while typing.
   - The lobby switcher (`L`, or a button in the HUD) shows the `lobbyList` with number, label and player count, and highlights the current lobby. The HUD shows `Lobby #n` or `Home · <name> #n` while in the public world.
   - The unlock dialog opens when using a fence tile and shows the `unlockPrice` and an "Unlock" button.
-  - The gems panel lists `PRODUCTS` with INR prices. A "Buy" button sends `buyGems`, and the panel shows "Check your Discord DMs to pay".
+  - The store panel lists the real-money `PRODUCTS` (emote packs, Farm Pass) with INR prices. A "Buy" button sends `buyProduct`, and the panel shows "Check your Discord DMs to pay". No gem packs.
 - [ ] **Step 1: Failing tests:** `setInput returns msg only on change or after 100 ms`, `advance matches server simulate for the same inputs`, `reconcile with no mismatch leaves position unchanged`, `reconcile after a server correction replays pending inputs to the right spot`.
 - [ ] **Step 2: Run** `cd activity && bun test src/predict.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement** the predictor, then input, then UI.
-- [ ] **Step 4: Run** `cd activity && bun test && bunx vite build`. Expected: PASS. Manual check in Discord desktop and mobile: walk, till, plant, water, buy seeds, sell a crop, unlock a chunk, and press Buy Gems to receive a DM.
+- [ ] **Step 4: Run** `cd activity && bun test && bunx vite build`. Expected: PASS. Manual check in Discord desktop and mobile: walk, till, plant, water, buy seeds, sell a crop, unlock a chunk, and press Buy on a store item to receive a DM.
 - [ ] **Step 5: Commit** `feat(activity): input, client prediction and game UI`.
 
 ---
@@ -714,8 +724,65 @@ Hostile wildlife, hunting and livestock (cattle management) are Phase 3.1 and bu
 
 ---
 
+### Task 19: HD asset pipeline
+
+Owner decision (2026-11-17): all game assets are upgraded to **HD pixel art at a 32×32 source tile size**. The art comes from **CC0 art packs** (for example Kenney; CC0 means free for commercial use with no attribution required), plus custom-made sprites only where a pack has no match. The procedural, code-drawn textures are retired.
+
+**Files:**
+- Create: `activity/public/assets/` holding texture atlases (`tiles.png` + `tiles.json`, `characters.png` + `.json`, `animals.png` + `.json`, `items.png` + `.json`, `ui.png` + `.json`) in Phaser's JSON-hash atlas format
+- Create: `activity/public/assets/LICENSES.md`, listing every source pack with its URL, licence (CC0 only, unless the owner approves otherwise) and which frames came from it; custom sprites are marked "original (Agni)"
+- Create: `activity/src/assets/manifest.ts`, the typed map from game concepts to atlas frame names
+- Create: `scripts/build-atlas.ts`, a Bun script that packs the source PNGs in `art/` into the atlases (so art changes are reproducible)
+- Create: `art/`, holding the source PNGs at 32×32 per tile and frame, with each pack's licence file kept beside it
+- Modify: `activity/src/textures.ts` (it becomes a thin loader backed by the manifest), `activity/src/chunkRenderer.ts`, `activity/src/playerSprite.ts`, `activity/src/scenes/World.ts`, and the animal sprites from Task 17
+- Test: `activity/src/assets/manifest.test.ts`
+
+**Interfaces:**
+- Produces:
+  ```ts
+  // activity/src/assets/manifest.ts
+  export const SRC_TILE = 32;            // source pixels per tile
+  export const DRAW_SCALE = 1.5;         // 48 screen px per tile, same as before
+  export type TAtlas = "tiles" | "characters" | "animals" | "items" | "ui";
+  export interface TFrameRef { atlas: TAtlas; frame: string }
+  export const TERRAIN_FRAMES: Record<number, TFrameRef[]>;   // every T value → 1..n variants (grass picks a variant by tile hash)
+  export const CROP_FRAMES: Record<string, TFrameRef[]>;      // per crop id: one frame per growth stage, ending in a ripe frame
+  export const ITEM_FRAMES: Record<string, TFrameRef>;        // every id in game/data/items.ts
+  export const ANIMAL_FRAMES: Record<string, Record<"u"|"d"|"l"|"r", TFrameRef[]>>; // walk cycle ≥ 2 frames per facing
+  export const CHARACTER_FRAMES: Record<"u"|"d"|"l"|"r", TFrameRef[]>;              // base body walk cycle (tinted by player colour); crown overlay
+  export function frameFor(t: number, x: number, y: number): TFrameRef; // deterministic variant pick
+  ```
+- Phaser loads the atlases in a `Boot` scene with a progress bar before `World` starts. Every path is relative and bundled, so nothing is fetched from outside the Activity's origin (Discord's proxy).
+- [ ] **Step 1: Failing tests** in `manifest.test.ts`:
+  - `every terrain value has a frame`: covers every value of `T`.
+  - `every item has an icon`: covers every key of `ITEMS`.
+  - `every crop has a frame per growth stage plus ripe`: frames = `growDays + 1`.
+  - `every animal kind has walk frames for all four facings`.
+  - `frameFor is deterministic`.
+  - `every referenced frame exists in its atlas json`: read `activity/public/assets/*.json` with Bun.
+- [ ] **Step 2: Run** `cd activity && bun test src/assets`. Expected: FAIL.
+- [ ] **Step 3: Assemble the art.**
+  1. Choose CC0 packs that cover terrain, crops, characters, animals and items in one consistent 32 px style.
+  2. Fill gaps with original sprites drawn to match that palette and outline style.
+  3. Write `LICENSES.md`.
+  4. Run `bun scripts/build-atlas.ts` to produce the atlases.
+- [ ] **Step 4: Implement** the manifest, the Boot scene, and the switch of the chunk renderer, player, animal and UI icons to atlas frames.
+  - Characters and animals get 4-direction walk animations through Phaser `anims`.
+  - Crops show their growth stages.
+  - Water gets a 2–4 frame animated shimmer.
+  - Remove the procedural drawing code.
+- [ ] **Step 5: Run** `cd activity && bun test && bunx tsc --noEmit && bunx vite build`. Expected: PASS.
+  - Run a headless smoke render of land, town, a field, locked chunks, night, players and animals, and save screenshots for the owner.
+  - Check `dist/` stays under 25 MB.
+- [ ] **Step 6: Commit** in pieces:
+  1. `chore(art): add CC0 source art and licences`
+  2. `feat(activity): atlas builder and asset manifest`
+  3. `feat(activity): render with HD pixel-art atlases`
+
+---
+
 ## Self-review notes
 
-- **Spec coverage.** Continuous movement (§5, J7 b): Tasks 1, 4, 9, 13 and 14. Chat (§4.5): Task 16. §4.1 instances: Tasks 4 and 9. §4.2 chunks: Tasks 2 and 6. §4.3 open world, read-only lobbies and regrowth: Tasks 3, 4 and 9; home lobbies and the switcher: Tasks 7, 9 and 14. Emotes (§4.5a): Task 18. Wild animals (§4.8): Task 17. §5 architecture: Tasks 7, 8 and 11. D4 Razorpay via bot: Task 10. D2 migration and D3 launcher: Task 15. §4.4 social, §4.6 night vision, §4.7 jobs and §4.9 cosmetics are Phases 2 to 4 and out of scope here, apart from the gem purchase entry point.
+- **Spec coverage.** Continuous movement (§5, J7 b): Tasks 1, 4, 9, 13 and 14. Chat (§4.5): Task 16. §4.1 instances: Tasks 4 and 9. §4.2 chunks: Tasks 2 and 6. §4.3 open world, read-only lobbies and regrowth: Tasks 3, 4 and 9; home lobbies and the switcher: Tasks 7, 9 and 14. Emotes (§4.5a): Task 18. Wild animals (§4.8): Task 17. §5 architecture: Tasks 7, 8 and 11. D4 Razorpay via bot: Task 10. D2 migration and D3 launcher: Task 15. §4.4 social, §4.6 night vision, §4.7 jobs and §4.9 cosmetics are Phases 2 to 4 and out of scope here, apart from the real-money store entry point. HD art (owner decision): Task 19.
 - `canBuild` is owner-only in Phase 1. Phase 2 replaces its body with the permission table, and the signature stays.
 - `Land.slot` exists now so the Phase 4 second land doesn't need a migration.

@@ -150,7 +150,7 @@ Built into the Activity. Every message has a channel picked by its prefix:
 ### 4.9 Monetization (Phase 4)
 | Product | Kind | Notes |
 |---------|------|-------|
-| Gems (existing packs) | Razorpay one-time | buy the things below |
+| Gems | **earned in-game only, never sold for real money** (owner, 2026-11-17): daily reward, rare ore drops, later achievements | buy cosmetics and convenience |
 | Skins (character outfits) | gem item, durable | cosmetic only |
 | Premium emotes | gems, or Razorpay emote packs | cosmetic only; ships in Phase 1 (§4.5a) |
 | Land themes (grass, fence, house palette) | gem item, durable | cosmetic only |
@@ -158,7 +158,7 @@ Built into the Activity. Every message has a channel picked by its prefix:
 | Second land | gems | a second private land instance with its own seed and land |
 | Farm Pass (existing) | Razorpay one-time, 30 days | crown and daily energy refill, unchanged |
 
-All real-money products are sold through Razorpay links that the bot DMs (decided, see §3). Gems are the in-game currency for everything cosmetic.
+All real-money products are **items** (emote packs, Farm Pass, later skins, themes, land) sold through Razorpay links that the bot DMs (decided, see §3). Gems are never sold.
 
 ## 5. Architecture
 
@@ -208,7 +208,10 @@ Calls I made, open to correction:
 
 Each phase gets its own plan. Phase 1's plan is `docs/superpowers/plans/2026-11-16-phase1-activity-port.md`.
 
-## 8. Left to the builder
-- Exact pixel art, colours and UI layout, within the existing procedural style.
+## 8. Art direction (owner, 2026-11-17)
+- All game assets are upgraded to **HD pixel art at a 32×32 source tile size**. The art comes from **CC0 art packs** (e.g. Kenney), plus custom sprites that match their style. Animated walk cycles, crop growth stages and water shimmer. Plan Task 19.
+
+## 9. Left to the builder
+- UI layout, within the chosen art direction.
 - The terrain noise for chunks, as long as it is deterministic per `(seed, cx, cy)`.
 - Mobile touch controls layout (an on-screen d-pad plus an action button is the minimum).

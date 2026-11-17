@@ -158,11 +158,14 @@ export default class PaymentManager {
 				return 200;
 			}
 			const result = await this.grant(purchase.userId, product, `razorpay:${payment.id}`);
+			const fresh = result.ok && !("duplicate" in result && result.duplicate);
+			// Refreshes an open Activity session
+			if (fresh) await this.client.gameServer?.pushWallet(purchase.userId);
 			const first = await Purchase.findOneAndUpdate(
 				{ _id: purchase._id, notified: false },
 				{ $set: { status: "paid", paymentId: payment.id, paidAt: new Date(), notified: true } },
 			);
-			if (first && !("duplicate" in result && result.duplicate)) await this.notify(purchase.userId, product, "Razorpay");
+			if (first && fresh) await this.notify(purchase.userId, product, "Razorpay");
 			this.client.log.info("[PAYMENT] Razorpay grant", { userId: purchase.userId, productId: product.id, paymentId: payment.id });
 			return 200;
 		}
@@ -201,6 +204,7 @@ export default class PaymentManager {
 			// Discord manages renewals; mirror its end date
 			await this.grant(userId, product, sourceKey, entitlement.endsAt);
 			await Subscription.updateOne({ sourceId: sourceKey }, { $set: { endsAt: entitlement.endsAt, active: entitlement.isActive() } });
+			await this.client.gameServer?.pushWallet(userId);
 			return;
 		}
 		if (entitlement.consumed) return;
@@ -213,7 +217,10 @@ export default class PaymentManager {
 				{ $setOnInsert: { userId, productId: product.id, status: "paid", paidAt: new Date(), notified: true } },
 				{ upsert: true },
 			);
-			if (!("duplicate" in result && result.duplicate)) await this.notify(userId, product, "Discord");
+			if (!("duplicate" in result && result.duplicate)) {
+				await this.client.gameServer?.pushWallet(userId);
+				await this.notify(userId, product, "Discord");
+			}
 		}
 		this.client.log.info("[PAYMENT] Discord grant", { userId, sku: entitlement.skuId, entitlementId: entitlement.id });
 	}

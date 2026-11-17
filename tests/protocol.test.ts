@@ -19,7 +19,7 @@ describe("parseClientMessage", () => {
 			{ t: "sell", item: "wheat", qty: 3 },
 			{ t: "sell", item: "wheat", qty: "all" },
 			{ t: "unlock", cx: 2, cy: -3 },
-			{ t: "buyGems", productId: "p1" },
+			{ t: "buyProduct", productId: "p1" },
 			{ t: "lobbies" },
 			{ t: "switchLobby", lobby: 2 },
 			{ t: "emote", id: "wave" },

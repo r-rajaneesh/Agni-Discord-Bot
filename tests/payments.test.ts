@@ -14,6 +14,7 @@ process.env.RAZORPAY_WEBHOOK_SECRET = SECRET;
 
 let replset: MongoMemoryReplSet;
 const dms: string[] = [];
+const pushed: string[] = [];
 const noop = () => {};
 const client: any = {
 	economy: new EconomyManager(),
@@ -21,6 +22,7 @@ const client: any = {
 	log: { info: noop, debug: noop, warn: noop, error: noop },
 	makeEmbed: (e: any) => e,
 	users: { fetch: async (id: string) => ({ send: async () => dms.push(id) }) },
+	gameServer: { pushWallet: async (id: string) => void pushed.push(id) },
 };
 const payments = new PaymentManager(client);
 
@@ -80,6 +82,15 @@ describe("razorpay webhook", () => {
 });
 
 describe("farm pass", () => {
+	test("a paid link grants the pass once and refreshes the open session once", async () => {
+		const p = await Purchase.create({ userId: "u6", productId: "farm_pass", provider: "razorpay" });
+		const body = paidEvent(String(p._id), "pay_pass", 19900);
+		for (let i = 0; i < 2; i++) expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		expect(await payments.hasPass("u6")).toBe(true);
+		expect(pushed.filter((u) => u === "u6")).toHaveLength(1);
+		expect(dms.filter((d) => d === "u6")).toHaveLength(1);
+	});
+
 	test("one-time passes stack and refunds end them", async () => {
 		const pass = productById("farm_pass")!;
 		await payments.grant("u4", pass, "razorpay:pay_a");

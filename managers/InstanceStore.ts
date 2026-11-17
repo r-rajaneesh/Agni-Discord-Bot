@@ -85,6 +85,10 @@ export default class InstanceStore {
 		);
 	}
 
+	async setEnergy(userId: string, energy: number, at: number): Promise<void> {
+		await PlayerState.updateOne({ userId }, { $set: { energy, lastEnergyAt: at } });
+	}
+
 	async saveTiles(inst: TInstance, keys: string[]): Promise<void> {
 		if (keys.length === 0) return;
 		const landId = landIdOf(inst);

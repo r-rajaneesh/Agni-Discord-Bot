@@ -69,7 +69,7 @@ export class ClientState {
 			}
 			case "you": {
 				if (!this.you) return {};
-				// Task 14 adds prediction; for now the server position is drawn as is
+				// The server position; Predictor.reconcile then replays the inputs it hasn't applied yet
 				this.you = { ...this.you, x: m.x, y: m.y, facing: m.facing };
 				this.ack = m.ack;
 				return {};

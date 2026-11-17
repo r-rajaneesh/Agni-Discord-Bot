@@ -8,6 +8,8 @@ import { Purchase, Subscription } from "./models/Economy";
 
 const DAY_MS = 86_400_000;
 const LINK_TTL_MS = 30 * 60 * 1000;
+/** How long a receipt for a webhook served before login waits for the bot to come online */
+const READY_WAIT_MS = 5 * 60_000;
 
 /** The grant key of a paid purchase, as grant() was given it */
 const purchaseKey = (p: { provider: string; paymentId?: string | null; externalId?: string | null }) =>
@@ -110,33 +112,54 @@ export default class PaymentManager {
 	/** A paid cosmetic purchase that added nothing: an honest receipt, and a warning so the owner refunds it */
 	private async alreadyOwned(userId: string, product: TProduct, provider: string, paymentRef: string) {
 		this.client.log.warn("[PAYMENT] Paid for a pack the player already fully owned; refund it", { userId, productId: product.id, provider, paymentRef });
-		const user = await this.client.users.fetch(userId).catch(() => null);
-		await user
-			?.send({
-				embeds: [
-					this.client.makeEmbed({
-						title: `${product.emoji} Payment received`,
-						description: `You already owned everything in **${product.name}**, so nothing new was added. This purchase will be refunded or credited to you (${provider}, ${paymentRef}).`,
-						color: this.client.config.colours.green,
-					}),
-				],
-			})
-			.catch(() => null);
+		await this.dm(
+			userId,
+			this.client.makeEmbed({
+				title: `${product.emoji} Payment received`,
+				description: `You already owned everything in **${product.name}**, so nothing new was added. This purchase will be refunded or credited to you (${provider}, ${paymentRef}).`,
+				color: this.client.config.colours.green,
+			}),
+		);
 	}
 
 	private async notify(userId: string, product: TProduct, provider: string) {
-		const user = await this.client.users.fetch(userId).catch(() => null);
-		await user
-			?.send({
-				embeds: [
-					this.client.makeEmbed({
-						title: `${product.emoji} Purchase complete`,
-						description: `Thanks! **${product.name}** has been added to your account (${provider}).`,
-						color: this.client.config.colours.green,
-					}),
-				],
-			})
-			.catch(() => null);
+		await this.dm(
+			userId,
+			this.client.makeEmbed({
+				title: `${product.emoji} Purchase complete`,
+				description: `Thanks! **${product.name}** has been added to your account (${provider}).`,
+				color: this.client.config.colours.green,
+			}),
+		);
+	}
+
+	/**
+	 * DMs a receipt. Webhooks are served before login, so while the bot is offline the DM waits for it to be ready
+	 * (up to READY_WAIT_MS) without holding up the webhook's answer.
+	 */
+	private async dm(userId: string, embed: ReturnType<ClientManager["makeEmbed"]>) {
+		const send = async () => {
+			const user = await this.client.users.fetch(userId).catch(() => null);
+			await user?.send({ embeds: [embed] }).catch(() => null);
+		};
+		if (this.client.isReady()) return send();
+		void this.untilReady().then((ok) =>
+			ok ? send() : this.client.log.warn("[PAYMENT] Receipt not sent: the bot never came online", { userId }),
+		);
+	}
+
+	private untilReady(): Promise<boolean> {
+		return new Promise((resolve) => {
+			const onReady = () => {
+				clearTimeout(timer);
+				resolve(true);
+			};
+			const timer = setTimeout(() => {
+				this.client.off(Discord.Events.ClientReady, onReady);
+				resolve(false);
+			}, READY_WAIT_MS);
+			this.client.once(Discord.Events.ClientReady, onReady);
+		});
 	}
 
 	// ---------- Razorpay ----------
@@ -195,8 +218,15 @@ export default class PaymentManager {
 				this.client.log.error("[PAYMENT] Paid link with no matching purchase", { ref, paymentId: payment?.id });
 				return 200;
 			}
-			if (payment?.amount !== product.priceINR || payment?.currency !== "INR") {
-				this.client.log.error("[PAYMENT] Amount mismatch", { ref, amount: payment?.amount, expected: product.priceINR });
+			// The price when the link was made; older purchases without one use the current price
+			const expected = purchase.amount ?? product.priceINR;
+			if (payment?.amount !== expected || payment?.currency !== "INR") {
+				this.client.log.error("[PAYMENT] Amount mismatch", { ref, amount: payment?.amount, expected });
+				return 200;
+			}
+			// A late or replayed paid event must not hand a refunded pack back
+			if (purchase.status === "refunded") {
+				this.client.log.warn("[PAYMENT] Paid event for a refunded purchase ignored", { ref, paymentId: payment.id });
 				return 200;
 			}
 			const result = await this.grant(purchase.userId, product, `razorpay:${payment.id}`);
@@ -208,8 +238,9 @@ export default class PaymentManager {
 				{ _id: purchase._id, notified: false },
 				{ $set: { status: "paid", paymentId: payment.id, paidAt: new Date(), notified: true } },
 			);
-			// Purchase.notified dedupes replays, so the receipt and the warning go out once
-			if (first && fresh) await this.notify(purchase.userId, product, "Razorpay");
+			// Purchase.notified dedupes replays, so the receipt and the warning go out once. The receipt goes out on the
+			// first delivery even when the grant was a duplicate: an earlier attempt may have granted, then crashed before `notified`.
+			if (first && !empty) await this.notify(purchase.userId, product, "Razorpay");
 			if (first && empty) await this.alreadyOwned(purchase.userId, product, "Razorpay", payment.id);
 			this.client.log.info("[PAYMENT] Razorpay grant", { userId: purchase.userId, productId: product.id, paymentId: payment.id });
 			return 200;
@@ -219,9 +250,13 @@ export default class PaymentManager {
 			const purchase = await Purchase.findOne({ paymentId: refund?.payment_id });
 			const product = purchase && productById(purchase.productId);
 			if (purchase && product) {
-				await this.revoke(purchase.userId, product, `razorpay:${refund.payment_id}`);
+				// Refunded first: a paid event replayed meanwhile, or after a crash mid-revoke, then grants nothing
 				await Purchase.updateOne({ _id: purchase._id }, { $set: { status: "refunded" } });
+				await this.revoke(purchase.userId, product, `razorpay:${refund.payment_id}`);
 				this.client.log.info("[PAYMENT] Razorpay refund", { userId: purchase.userId, paymentId: refund.payment_id });
+			} else {
+				// Usually the refund arrived before the paid event stored its payment id; the owner must revoke by hand
+				this.client.log.error("[PAYMENT] Refund for an unknown payment", { refundId: refund?.id, paymentId: refund?.payment_id });
 			}
 			return 200;
 		}
@@ -241,8 +276,8 @@ export default class PaymentManager {
 		if (!product || !userId) return;
 		const sourceKey = `discord:${entitlement.id}`;
 		if (deleted) {
-			await this.revoke(userId, product, sourceKey);
 			await Purchase.updateOne({ provider: "discord", externalId: entitlement.id }, { $set: { status: "refunded" } });
+			await this.revoke(userId, product, sourceKey);
 			this.client.log.info("[PAYMENT] Discord entitlement revoked", { userId, sku: entitlement.skuId });
 			return;
 		}

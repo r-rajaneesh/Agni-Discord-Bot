@@ -30,7 +30,7 @@ const MAX_STEP = 0.25;
 const EPS = 1e-6;
 // Reach of the faced point and of an animal hit, in tiles
 const REACH = 0.8;
-const HIT_RADIUS = 1.2;
+export const HIT_RADIUS = 1.2;
 
 export const HOUSE_DOOR = { x: HOUSE.x + 2, y: HOUSE.y + HOUSE.h - 1 };
 
@@ -199,7 +199,7 @@ export function enter(
 }
 
 // Moves one axis by d (|d| ≤ MAX_STEP). When blocked, stops flush against the tile edge.
-function moveAxis(inst: TInstance, p: TPlayerState, axis: "x" | "y", d: number, now: number) {
+function moveAxis(inst: TInstance, p: { x: number; y: number }, axis: "x" | "y", d: number, now: number) {
 	if (d === 0) return;
 	const h = PLAYER_BOX / 2;
 	const next = p[axis] + d;
@@ -224,21 +224,32 @@ export function simulate(inst: TInstance, userId: string, dx: -1 | 0 | 1, dy: -1
 	else if (p.facing !== h && p.facing !== v) p.facing = h;
 
 	// At most one second per call, so a stalled caller cannot ask for an unbounded number of steps
-	const dist = (WALK_SPEED * Math.min(dtMs, 1000)) / 1000;
+	moveBody(inst, p, dx, dy, (WALK_SPEED * Math.min(dtMs, 1000)) / 1000, now);
+}
+
+/** Moves a player-sized box `dist` tiles along (dx, dy) with the player collision rules (animals use it too) */
+export function moveBody(inst: TInstance, body: { x: number; y: number }, dx: number, dy: number, dist: number, now: number): void {
 	const len = Math.hypot(dx, dy);
+	if (!(dist > 0) || !(len > 0) || !Number.isFinite(dist) || !Number.isFinite(len)) return;
 	const steps = Math.ceil(dist / MAX_STEP);
 	const sx = ((dx / len) * dist) / steps;
 	const sy = ((dy / len) * dist) / steps;
 	for (let i = 0; i < steps; i++) {
-		moveAxis(inst, p, "x", sx, now);
-		moveAxis(inst, p, "y", sy, now);
+		moveAxis(inst, body, "x", sx, now);
+		moveAxis(inst, body, "y", sy, now);
 	}
 }
 
-/** Tile containing the point REACH tiles ahead of the player centre */
-export function facedTile(p: TPlayerState) {
+/** The point REACH tiles ahead of the player centre */
+export function facedPoint(p: TPlayerState) {
 	const [dx, dy] = DIRS[p.facing];
-	return { x: Math.floor(p.x + dx * REACH), y: Math.floor(p.y + dy * REACH) };
+	return { x: p.x + dx * REACH, y: p.y + dy * REACH };
+}
+
+/** Tile containing the faced point */
+export function facedTile(p: TPlayerState) {
+	const f = facedPoint(p);
+	return { x: Math.floor(f.x), y: Math.floor(f.y) };
 }
 
 // Deterministic ore roll so the result does not depend on who processes the action
@@ -283,9 +294,7 @@ export function use(
 			: { ...r, energyCost: cost, apply: () => (spendEnergy(p, now, cost), r.apply?.()) };
 
 	if (animals?.length) {
-		const [dx, dy] = DIRS[p.facing];
-		const fx = p.x + dx * REACH;
-		const fy = p.y + dy * REACH;
+		const { x: fx, y: fy } = facedPoint(p);
 		let hit: number | undefined;
 		let best = HIT_RADIUS;
 		for (const a of animals) {

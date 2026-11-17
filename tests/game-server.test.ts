@@ -1,11 +1,12 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
-import { CHUNK, LAND_SPAWN, cachedChunkCount } from "../game/chunks";
+import { CHUNK, LAND_SPAWN, cachedChunkCount, chunkOf } from "../game/chunks";
 import { MAX_ENERGY, TICK_MS, TREE_REGROW_MS, WALK_SPEED, enter, use, type TDir, type TInstance } from "../game/engine";
+import * as entities from "../game/entities";
 import { T } from "../game/map";
 import type { TServerMsg } from "../game/protocol";
-import { TOWN_SPAWN, worldTerrain } from "../game/world";
+import { TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from "../game/world";
 import EconomyManager from "../managers/EconomyManager";
 import GameServer, { LOBBY_CAP } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
@@ -496,5 +497,155 @@ describe("lobbies", () => {
 		expect(use(one, "t", clock, {}).msg).toBe("This is still growing.");
 		expect(use(two, "t", clock, {}).ok).toBe(true);
 		expect(two.tiles.size).toBe(0);
+	});
+});
+
+describe("animals", () => {
+	afterEach(() => mock.restore());
+
+	// Homes of two rabbits more than two AOI widths apart, both outside town
+	const homes: { x: number; y: number }[] = [];
+	for (let cy = -WORLD_CHUNKS / 2; cy < WORLD_CHUNKS / 2 && homes.length < 2; cy++)
+		for (let cx = -WORLD_CHUNKS / 2; cx < WORLD_CHUNKS / 2 && homes.length < 2; cx++) {
+			const r = entities.spawnAnimals(cx, cy).find((a) => a.kind === "rabbit");
+			if (r && homes.every((h) => Math.abs(chunkOf(h.x, h.y).cx - cx) > 5)) homes.push({ x: r.homeX, y: r.homeY });
+		}
+	const [A, B] = homes as [{ x: number; y: number }, { x: number; y: number }];
+	const chebyshev = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+		const ca = chunkOf(a.x, a.y);
+		const cb = chunkOf(b.x, b.y);
+		return Math.max(Math.abs(ca.cx - cb.cx), Math.abs(ca.cy - cb.cy));
+	};
+	const entsOf = (ws: TSock) => sent(ws).filter((m) => m.t === "ents") as Extract<TServerMsg, { t: "ents" }>[];
+	const step = (gs: GameServer) => {
+		clock += TICK_MS;
+		gs.tick();
+	};
+	// Puts a living rabbit of `instId` on the player's faced point
+	const rabbitInFront = (gs: GameServer, instId: string, userId: string) => {
+		const p = gs.instance(instId)!.players.get(userId)!;
+		const r = gs.animals(instId).find((a) => a.kind === "rabbit" && a.state !== "dead")!;
+		r.x = p.x;
+		r.y = p.y + 0.8; // facing down
+		return r;
+	};
+
+	test("ents only within AOI", async () => {
+		await seedWorld("a", A.x, A.y);
+		await seedWorld("b", B.x, B.y);
+		const gs = server();
+		const a = await join(gs, "a");
+		const b = await join(gs, "b");
+		step(gs);
+		const ea = last(a, "ents")!.ents;
+		const eb = last(b, "ents")!.ents;
+		expect(ea.length).toBeGreaterThan(0);
+		expect(eb.length).toBeGreaterThan(0);
+		for (const [, , x, y] of ea) expect(chebyshev({ x, y }, A)).toBeLessThanOrEqual(2);
+		for (const [, , x, y] of eb) expect(chebyshev({ x, y }, B)).toBeLessThanOrEqual(2);
+		// Exactly the living animals in a's AOI
+		const inAoi = gs.animals("lobby:1").filter((an) => an.state !== "dead" && chebyshev(an, A) <= 2);
+		expect(ea.map(([id]) => id).sort()).toEqual(inAoi.map((an) => an.id).sort());
+		expect(ea.some(([id]) => eb.some(([o]) => o === id))).toBe(false);
+
+		// Nothing moves: no message
+		spyOn(entities, "tickAnimal").mockImplementation(() => {});
+		const n = entsOf(a).length;
+		step(gs);
+		expect(entsOf(a)).toHaveLength(n);
+		// One animal moves: a new list
+		const moved = gs.animals("lobby:1").find((an) => an.id === ea[0]![0])!;
+		moved.x += 0.25;
+		step(gs);
+		expect(entsOf(a)).toHaveLength(n + 1);
+		expect(last(a, "ents")!.ents.find(([id]) => id === moved.id)![2]).toBeCloseTo(moved.x, 2);
+		expect(entsOf(b)).toHaveLength(1);
+	});
+
+	test("inactive chunks are not simulated", async () => {
+		await seedWorld("a", A.x, A.y);
+		const gs = server();
+		const a = await join(gs, "a");
+		const spy = spyOn(entities, "tickAnimal");
+		step(gs);
+		const loaded = gs.animals("lobby:1");
+		expect(loaded.length).toBeGreaterThan(0);
+		expect(spy).toHaveBeenCalledTimes(loaded.length);
+		for (const an of loaded) expect(chebyshev({ x: an.homeX, y: an.homeY }, A)).toBeLessThanOrEqual(2);
+		gs.close(a as any);
+		spy.mockClear();
+		step(gs);
+		expect(spy).not.toHaveBeenCalled();
+		expect(gs.animals("lobby:1")).toHaveLength(loaded.length);
+	});
+
+	test("animals despawn 60 s after chunk goes inactive", async () => {
+		await seedWorld("a", A.x, A.y);
+		const gs = server();
+		const a = await join(gs, "a");
+		step(gs);
+		expect(gs.animals("lobby:1").length).toBeGreaterThan(0);
+		gs.close(a as any);
+		step(gs);
+		clock += 60_000 - 1;
+		gs.tick();
+		expect(gs.animals("lobby:1").length).toBeGreaterThan(0);
+		clock += 1;
+		gs.tick();
+		expect(gs.animals("lobby:1")).toEqual([]);
+	});
+
+	test("slaughter credits drops to the hitter's inventory through EconomyManager", async () => {
+		await seedWorld("a", A.x, A.y);
+		const gs = server();
+		const a = await join(gs, "a");
+		step(gs);
+		spyOn(entities, "tickAnimal").mockImplementation(() => {});
+		const p = gs.instance("lobby:1")!.players.get("a")!;
+		const energy = p.energy;
+		const r = rabbitInFront(gs, "lobby:1", "a");
+		expect(await gs.hitAnimal("a", r.id)).toMatchObject({ ok: true, drops: { raw_meat: 1, hide: 1 } });
+		expect(await eco.inventory("a")).toMatchObject({ raw_meat: 1, hide: 1 });
+		expect(await LedgerEntry.countDocuments({ reason: "slaughter", ref: "rabbit" })).toBe(1);
+		expect(last(a, "wallet")!.inventory).toMatchObject({ raw_meat: 1, hide: 1 });
+		// engine use() charges the energy, not this
+		expect(p.energy).toBe(energy);
+		// Dead: not hittable, not sent
+		expect((await gs.hitAnimal("a", r.id)).ok).toBe(false);
+		step(gs);
+		expect(last(a, "ents")!.ents.some(([id]) => id === r.id)).toBe(false);
+		// Out of reach, or no such animal
+		const other = gs.animals("lobby:1").find((an) => an.state !== "dead")!;
+		other.x = p.x + 3;
+		other.y = p.y;
+		expect((await gs.hitAnimal("a", other.id)).ok).toBe(false);
+		expect((await gs.hitAnimal("a", 12345)).ok).toBe(false);
+		expect(await eco.inventory("a")).toMatchObject({ raw_meat: 1, hide: 1 });
+	});
+
+	test("slaughter works in lobbies; no wild animals spawn on private land", async () => {
+		member.b = ["G"];
+		await seedWorld("a", A.x, A.y);
+		await seedWorld("b", A.x, A.y);
+		const gs = server();
+		await join(gs, "a");
+		await join(gs, "b", "G");
+		step(gs);
+		spyOn(entities, "tickAnimal").mockImplementation(() => {});
+		// Each lobby has its own copy of the same animals
+		const ra = rabbitInFront(gs, "lobby:1", "a");
+		const rb = rabbitInFront(gs, "lobby:2", "b");
+		expect(rb.id).toBe(ra.id);
+		expect((await gs.hitAnimal("a", ra.id)).ok).toBe(true);
+		expect(rb.state).not.toBe("dead");
+		expect((await gs.hitAnimal("b", rb.id)).ok).toBe(true);
+		expect(await eco.inventory("b")).toMatchObject({ raw_meat: 1, hide: 1 });
+
+		const l = await join(gs, "l");
+		const landId = welcome(l).instance.id;
+		step(gs);
+		expect(gs.animals(landId)).toEqual([]);
+		expect(entsOf(l)).toEqual([]);
+		expect((await gs.hitAnimal("l", ra.id)).ok).toBe(false);
 	});
 });

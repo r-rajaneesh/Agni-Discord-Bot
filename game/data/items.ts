@@ -42,6 +42,12 @@ export const ITEMS: Record<string, TItem> = {
 	copper: { id: "copper", name: "Copper Ore", emoji: "🟠", category: "resource", basePrice: 25, liquidity: 300, tradeable: true },
 	iron: { id: "iron", name: "Iron Ore", emoji: "⚙️", category: "resource", basePrice: 60, liquidity: 200, tradeable: true },
 	gold: { id: "gold", name: "Gold Ore", emoji: "🟡", category: "resource", basePrice: 250, liquidity: 50, tradeable: true },
+
+	// Dropped by wild animals
+	raw_meat: { id: "raw_meat", name: "Raw Meat", emoji: "🥩", category: "resource", basePrice: 15, liquidity: 500, tradeable: true },
+	venison: { id: "venison", name: "Venison", emoji: "🍖", category: "resource", basePrice: 40, liquidity: 250, tradeable: true },
+	hide: { id: "hide", name: "Hide", emoji: "🟫", category: "resource", basePrice: 20, liquidity: 400, tradeable: true },
+	feather: { id: "feather", name: "Feather", emoji: "🪶", category: "resource", basePrice: 4, liquidity: 1000, tradeable: true },
 };
 
 export const TOOL_IDS = ["hoe", "watering_can", "axe", "pickaxe"] as const;

@@ -9,6 +9,7 @@
 		"start": "bun run index.ts",
 		"activity:dev": "cd activity && bunx vite",
 		"activity:build": "cd activity && bunx vite build",
+		"deploy": "bun run activity:build && (pm2 reload pm2.config.js || pm2 start pm2.config.js)",
 		"activity:typecheck": "cd activity && bunx tsc --noEmit"
 	},
 	"devDependencies": {

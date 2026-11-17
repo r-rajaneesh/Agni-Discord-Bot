@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
+const { EJSON } = mongoose.mongo.BSON;
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,5 +75,51 @@ describe("migrate-activity", () => {
 		expect(r.dropped).toEqual([]);
 		expect(fs.readdirSync(dir)).toEqual([]);
 		for (const name of KEEP) expect(await db().collection(name).countDocuments()).toBe(2);
+	});
+
+	test("backup restores ObjectIds and Dates", async () => {
+		const when = new Date("2026-01-02T03:04:05Z");
+		await db().collection("game_worlds").insertOne({ at: when });
+		const dir = tmp();
+		await migrate(db(), { backupDir: dir, yes: true }, quiet);
+		const [doc] = EJSON.parse(fs.readFileSync(path.join(dir, "game_worlds.json"), "utf8")) as any[];
+		expect(doc._id).toBeInstanceOf(mongoose.Types.ObjectId);
+		expect(doc.at).toBeInstanceOf(Date);
+		expect(doc.at.getTime()).toBe(when.getTime());
+	});
+
+	test("refuses to overwrite an existing backup", async () => {
+		await seed();
+		const dir = tmp();
+		fs.writeFileSync(path.join(dir, "game_tiles.json"), "[]");
+		await expect(migrate(db(), { backupDir: dir, yes: true }, quiet)).rejects.toThrow("fresh --backup-dir");
+		expect(await db().collection("game_worlds").countDocuments()).toBe(2);
+		expect(fs.existsSync(path.join(dir, "game_worlds.json"))).toBe(false);
+	});
+
+	test("a count mismatch aborts before any drop", async () => {
+		await seed();
+		const dir = tmp();
+		const real = db();
+		// Report one extra document on every count after the first (the pre-backup count)
+		const calls: Record<string, number> = {};
+		const stub = new Proxy(real, {
+			get(t, k) {
+				if (k !== "collection") return (t as any)[k].bind(t);
+				return (name: string) => {
+					const c = t.collection(name);
+					return new Proxy(c, {
+						get(ct, ck) {
+							if (ck === "countDocuments")
+								return async () => ((calls[name] = (calls[name] ?? 0) + 1) > 1 ? (await ct.countDocuments()) + 1 : ct.countDocuments());
+							const v = (ct as any)[ck];
+							return typeof v === "function" ? v.bind(ct) : v;
+						},
+					});
+				};
+			},
+		}) as typeof real;
+		await expect(migrate(stub, { backupDir: dir, yes: true }, quiet)).rejects.toThrow("does not match");
+		for (const name of OLD_COLLECTIONS) expect(await real.collection(name).countDocuments()).toBeGreaterThan(0);
 	});
 });

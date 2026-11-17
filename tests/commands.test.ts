@@ -140,7 +140,7 @@ describe("farm play", () => {
 			launchActivity,
 			reply,
 		};
-		await command.execute({ client: {}, interaction });
+		await command.execute({ client: { log: { warn: () => {} } }, interaction });
 		return reply;
 	};
 

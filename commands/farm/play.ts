@@ -19,7 +19,8 @@ export default new CommandBuilder({
 		if (interaction.options.getSubcommand() !== "play") return;
 		try {
 			await interaction.launchActivity();
-		} catch {
+		} catch (e) {
+			client.log.warn("[FARM] launchActivity failed", e);
 			await interaction.reply({ content: "Activities aren't enabled for this app yet.", flags: Discord.MessageFlags.Ephemeral });
 		}
 	},

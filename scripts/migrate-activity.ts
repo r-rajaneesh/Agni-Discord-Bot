@@ -40,12 +40,26 @@ export async function migrate(db: mongoose.mongo.Db, opts: TMigrateOptions, log:
 	fs.mkdirSync(dir, { recursive: true });
 	const { EJSON } = mongoose.mongo.BSON;
 	for (const name of present) {
-		const docs = await db.collection(name).find({}).toArray();
+		if (fs.existsSync(path.join(dir, `${name}.json`))) throw new Error(`${path.join(dir, `${name}.json`)} already exists; use a fresh --backup-dir`);
+	}
+	for (const name of present) {
+		// Stream through a cursor so big collections never sit in memory; the file is one JSON array
 		const file = path.join(dir, `${name}.json`);
-		fs.writeFileSync(file, EJSON.stringify(docs, undefined, 2, { relaxed: false }));
-		const onDisk = (EJSON.parse(fs.readFileSync(file, "utf8")) as unknown[]).length;
+		const fd = fs.openSync(file, "wx");
+		let written = 0;
+		try {
+			fs.writeSync(fd, "[");
+			for await (const doc of db.collection(name).find({})) {
+				fs.writeSync(fd, `${written ? ",\n" : "\n"}${EJSON.stringify(doc, { relaxed: false })}`);
+				written++;
+			}
+			fs.writeSync(fd, "\n]\n");
+		} finally {
+			fs.closeSync(fd);
+		}
 		const now = await db.collection(name).countDocuments();
-		if (onDisk !== docs.length || onDisk !== now) throw new Error(`Backup of ${name} does not match the collection (file ${onDisk}, read ${docs.length}, now ${now}); nothing dropped`);
+		const onDisk = written;
+		if (onDisk !== now) throw new Error(`Backup of ${name} does not match the collection (wrote ${written}, now ${now}); nothing dropped`);
 		result.backedUp.push(name);
 		log(`${name}: backed up ${onDisk} documents to ${file}`);
 	}

@@ -105,35 +105,39 @@ const ICONS: Record<string, (p: Pic) => string> = {
 		),
 };
 
-/** Seeds: the crop, large, with a small seed packet tucked in at the bottom left */
-function seeds(p: Pic, crop: string): string {
+/** The seed badge on a seed icon: a paper packet with a sprout, in the bottom-left corner over the crop */
+function seedBadge(p: Pic, crop: string): string {
 	const colour = CROPS[crop]!.colour;
-	return (
-		group(produce[crop]!(p), "translate(14 -10)") +
-		group(
-			path("M0 8l4 -8h28l4 8v40h-36z", p.shade("#f2e4c4", 0.15), { ol: true }) +
-				rect(4, 30, 28, 10, colour, { ol: false }) +
-				line("M0 8h36", OL, 2.5) +
-				[10, 18, 26].map((x) => ellipse(x, 20, 2.5, 3.5, darken("#c99a5e", 0.2))).join(""),
-			"translate(4 84) scale(0.85)",
-		)
+	return group(
+		path("M0 10l5 -10h34l5 10v42h-44z", p.shade("#f6ead0", 0.12), { ol: true }) +
+			rect(0, 36, 44, 9, colour) +
+			line("M0 36h44M0 45h44", OL, 2.5) +
+			line("M22 31v-10", "#3f8a3a", 3.5) +
+			path("M22 23q-10 -2 -11 -10q9 0 11 10z", "#5db04a", { ol: true, extra: { "stroke-width": 2 } }) +
+			path("M22 21q9 -3 11 -11q-9 1 -11 11z", "#5db04a", { ol: true, extra: { "stroke-width": 2 } }),
+		"translate(4 72)",
 	);
 }
 
 // Icons fill about 80% of the frame, centred, whatever size they were drawn at
 const FILL = 104;
+// A seed's crop is a little smaller and up-right, leaving the corner for the badge
+const SEED_FILL = 92;
 
 export function itemIcon(id: string): string {
 	const p = new Pic();
 	const def = ITEMS[id]!;
-	if (def.cropId) p.add(seeds(p, def.cropId));
-	else if (produce[id]) p.add(produce[id]!(p));
+	// Seeds show their crop at nearly the crop icon's size, with the seed badge on top
+	const draw = def.cropId ?? id;
+	if (produce[draw]) p.add(produce[draw]!(p));
 	else p.add(ICONS[id]!(p));
+	const over = def.cropId ? seedBadge(p, def.cropId) : "";
 	// getBBox sees past the frame edge but leaves out strokes, so pad by the outline
 	const box = new Resvg(p.svg()).getBBox();
 	if (!box) return p.svg();
 	const [w, h] = [box.width + OW * 2, box.height + OW * 2];
-	const k = FILL / Math.max(w, h);
-	return p.svg(false, { k, x: 64 - k * (box.x + box.width / 2), y: 64 - k * (box.y + box.height / 2) });
+	const k = (over ? SEED_FILL : FILL) / Math.max(w, h);
+	const [cx, cy] = over ? [72, 58] : [64, 64];
+	return p.svg(false, { k, x: cx - k * (box.x + box.width / 2), y: cy - k * (box.y + box.height / 2) }, over);
 }
 

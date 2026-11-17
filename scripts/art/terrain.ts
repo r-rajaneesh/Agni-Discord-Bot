@@ -381,6 +381,17 @@ export function shore(mask: number): Pic {
 	return p;
 }
 
+/** The inside corner of a bank: land touches this water tile only diagonally, at corner `c` */
+export function shoreCorner(c: "ne" | "se" | "sw" | "nw"): Pic {
+	const p = new Pic();
+	const x = c.includes("e") ? S : 0;
+	const y = c.includes("s") ? S : 0;
+	const arc = (r: number) => `M${x} ${y + (y ? -r : r)}A${r} ${r} 0 0 ${c === "ne" || c === "sw" ? 1 : 0} ${x + (x ? -r : r)} ${y}`;
+	p.add(circle(x, y, 18, GRASS.base));
+	p.add(line(arc(22), "#1d140c", 6, 0.12), line(arc(18), PATH.light, 7), line(arc(18), darken(PATH.dark, 0.2), 2.5, 0.7), line(arc(27), "#e8f7ff", 2.5, 0.55));
+	return p;
+}
+
 /** Locked land: a translucent veil */
 export function dim(): Pic {
 	return new Pic().add(rect(0, 0, S, S, "#0b0d1a", { op: 0.5 }));

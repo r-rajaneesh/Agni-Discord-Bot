@@ -12,6 +12,7 @@ import {
 	CHARACTER_FRAMES,
 	CROP_FRAMES,
 	FIELD_FRAMES,
+	SHORE_CORNERS,
 	SHORE_FRAMES,
 	TILES,
 	WATER_FRAMES,
@@ -59,19 +60,30 @@ const mod = (n: number, m: number) => ((n % m) + m) % m;
 const GROUND = new Set<number>([T.path, T.farmland, T.bridge, T.flowers]);
 // A bridge counts as water for banks, so the river runs on under it
 const WET = new Set<number>([T.water, T.bridge]);
-type TTerrainAt = (x: number, y: number) => number;
+export type TTerrainAt = (x: number, y: number) => number;
 const OVERLAY = new Set<number>([T.tree, T.rock, T.portal]);
 
 function ground(t: number, x: number, y: number): string {
 	return frameFor(GROUND.has(t) ? t : T.grass, x, y).frame;
 }
 
-/** Water, plus a bank on each side that borders land */
-function water(at: TTerrainAt, x: number, y: number, now: number): string[] {
+/** Water, plus a bank on each side that borders land and an inside corner where land touches only diagonally */
+export function waterLayers(at: TTerrainAt, x: number, y: number, now: number): string[] {
 	const dry = (dx: number, dy: number) => !WET.has(at(x + dx, y + dy));
 	const mask = (dry(0, -1) ? 1 : 0) | (dry(1, 0) ? 2 : 0) | (dry(0, 1) ? 4 : 0) | (dry(-1, 0) ? 8 : 0);
-	return mask ? [waterFrame(x, y, now), SHORE_FRAMES[mask]!.frame] : [waterFrame(x, y, now)];
+	const out = [waterFrame(x, y, now)];
+	if (mask) out.push(SHORE_FRAMES[mask]!.frame);
+	// Inside corners: both sides are water but the diagonal is land
+	for (const [c, dx, dy] of CORNERS) if (!dry(dx, 0) && !dry(0, dy) && dry(dx, dy)) out.push(SHORE_CORNERS[c].frame);
+	return out;
 }
+
+const CORNERS = [
+	["ne", 1, -1],
+	["se", 1, 1],
+	["sw", -1, 1],
+	["nw", -1, -1],
+] as const;
 
 // The shop front: posts only at its outer ends, a signboard over the doors, windows on alternate tiles
 function shopFront(at: TTerrainAt, x: number, y: number): string {
@@ -107,7 +119,7 @@ export function tileLayers(inst: TInstance, x: number, y: number, now: number): 
 	if (inst.kind === "land" && !inst.unlocked.has(chunkKey(cx, cy))) {
 		// Locked: the land that is there, dimmed, fenced where it meets open land
 		const base = landBaseTerrain(inst.seed, x, y);
-		const out = base === T.water ? water((ax, ay) => landBaseTerrain(inst.seed, ax, ay), x, y, now) : [ground(base, x, y)];
+		const out = base === T.water ? waterLayers((ax, ay) => landBaseTerrain(inst.seed, ax, ay), x, y, now) : [ground(base, x, y)];
 		if (OVERLAY.has(base)) out.push(frameFor(base, x, y).frame);
 		out.push(TILES.dim.frame);
 		const lx = mod(x, CHUNK);
@@ -123,7 +135,7 @@ export function tileLayers(inst: TInstance, x: number, y: number, now: number): 
 	const at: TTerrainAt = (ax, ay) => terrainAt(inst, ax, ay, now);
 	if (terrain === T.house) return [house(inst, x, y, now)];
 	if (terrain === T.wall || terrain === T.door) return [shopFront(at, x, y)];
-	if (terrain === T.water) return water(at, x, y, now);
+	if (terrain === T.water) return waterLayers(at, x, y, now);
 	if (terrain === T.roof) return [(terrainAt(inst, x, y - 1, now) === T.roof ? TILES.roof : TILES.roofRidge).frame];
 	if (terrain === T.field) {
 		if (tile?.regrowAt !== undefined && now < tile.regrowAt) return [TILES.tilled.frame];

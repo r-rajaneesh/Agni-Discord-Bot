@@ -49,6 +49,7 @@ tiles.shop_lower_win = t.shopLower("m", true).svg();
 tiles.shop_sign_l = t.shopSign("l").svg();
 tiles.shop_sign_r = t.shopSign("r").svg();
 for (let m = 1; m < 16; m++) tiles[`shore_${m}`] = t.shore(m).svg();
+for (const c of ["ne", "se", "sw", "nw"] as const) tiles[`shore_${c}`] = t.shoreCorner(c).svg();
 for (const crop of Object.values(CROPS)) {
 	tiles[`field_${crop.id}`] = field(crop.id).svg();
 	for (let s = 0; s <= crop.growDays; s++) tiles[`crop_${crop.id}_${s}`] = cropStage(crop.id, s).svg();

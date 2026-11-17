@@ -40,6 +40,7 @@ async function main(): Promise<void> {
 	let ui: GameUI | null = null;
 	let input: Input | null = null;
 	let resize: ResizeObserver | null = null;
+	let unwatchDpr = () => {};
 	let raf = 0;
 	// Shown over the game while the socket is reconnecting
 	const banner = document.createElement("div");
@@ -83,13 +84,25 @@ async function main(): Promise<void> {
 				scene: [new Boot(), world],
 			});
 			const g = game;
-			resize = new ResizeObserver(() => {
+			const fit = () => {
 				const size = canvasSize(app.clientWidth, app.clientHeight, deviceScale(devicePixelRatio));
 				// Resize first: setZoom then restyles the canvas for the new size (resize alone skips it at zoom 1)
 				g.scale.resize(size.width, size.height);
 				g.scale.setZoom(size.zoom);
-			});
+			};
+			resize = new ResizeObserver(fit);
 			resize.observe(app);
+			// Moving to a screen with another pixel ratio doesn't resize #app; this query fires instead, once per ratio
+			const watchDpr = () => {
+				const mq = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+				const changed = () => {
+					fit();
+					watchDpr();
+				};
+				mq.addEventListener("change", changed, { once: true });
+				unwatchDpr = () => mq.removeEventListener("change", changed);
+			};
+			watchDpr();
 			const gameUi = new GameUI(app, state, (m) => client.send(m));
 			ui = gameUi;
 			input = new Input(
@@ -120,6 +133,7 @@ async function main(): Promise<void> {
 			input = null;
 			resize?.disconnect();
 			resize = null;
+			unwatchDpr();
 			game?.destroy(true);
 			game = null;
 			world = null;

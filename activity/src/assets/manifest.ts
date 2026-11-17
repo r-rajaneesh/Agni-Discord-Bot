@@ -50,6 +50,9 @@ export const TILES = {
 /** Banks drawn over water, by which sides border land: bit 1 north, 2 east, 4 south, 8 west (masks 1 to 15) */
 export const SHORE_FRAMES: Record<number, TFrameRef> = Object.fromEntries(Array.from({ length: 15 }, (_, i) => [i + 1, tile(`shore_${i + 1}`)]));
 
+/** Inside bank corners, where land touches water only diagonally */
+export const SHORE_CORNERS = { ne: tile("shore_ne"), se: tile("shore_se"), sw: tile("shore_sw"), nw: tile("shore_nw") };
+
 /** A public field of each crop: tilled rows with ripe plants */
 export const FIELD_FRAMES: Record<string, TFrameRef> = Object.fromEntries(Object.keys(CROPS).map((id) => [id, tile(`field_${id}`)]));
 

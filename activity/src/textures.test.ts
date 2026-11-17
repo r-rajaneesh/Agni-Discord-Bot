@@ -4,7 +4,7 @@ import { DAY_MS, HOUSE_DOOR, createLand, createLobby, tileKey } from "@game/engi
 import { T } from "@game/map";
 import { LAND_GATE, worldTerrain } from "@game/world";
 import { WATER_FRAME_MS } from "./assets/manifest";
-import { isWaterFrame, tileLayers } from "./textures";
+import { isWaterFrame, tileLayers, waterLayers } from "./textures";
 
 const land = () => createLand("land:me", "me", 42, 0);
 
@@ -112,6 +112,16 @@ test("water gets a bank on each side that borders land, and none toward a bridge
 	while (worldTerrain(x, b.y) === T.bridge) x--;
 	const bank = at(x, b.y)[1];
 	expect(bank === undefined || (Number(bank.slice(6)) & 2) === 0).toBe(true);
+});
+
+test("water banks: sides from 4 neighbours, inside corners from the diagonals", () => {
+	// A plus-shaped pond: the centre's sides are water, its four diagonals land
+	const pond = new Set(["0,0", "1,0", "-1,0", "0,1", "0,-1"]);
+	const at = (x: number, y: number) => (pond.has(`${x},${y}`) ? T.water : T.grass);
+	const centre = waterLayers(at, 0, 0, 0);
+	expect(centre.slice(1).sort()).toEqual(["shore_ne", "shore_nw", "shore_se", "shore_sw"]);
+	// The east arm: land north, east and south (1 + 2 + 4); its west side is water, and no diagonal pair is wet
+	expect(waterLayers(at, 1, 0, 0).slice(1)).toEqual(["shore_7"]);
 });
 
 test("the shop front: a sign over the doors, posts only at the ends, windows on alternate tiles", () => {

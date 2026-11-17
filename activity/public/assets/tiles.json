@@ -1740,7 +1740,7 @@
 				"h": 128
 			}
 		},
-		"tilled": {
+		"shore_ne": {
 			"frame": {
 				"x": 1636,
 				"y": 684,
@@ -1760,7 +1760,7 @@
 				"h": 128
 			}
 		},
-		"tree_0": {
+		"shore_nw": {
 			"frame": {
 				"x": 1772,
 				"y": 684,
@@ -1780,7 +1780,7 @@
 				"h": 128
 			}
 		},
-		"tree_1": {
+		"shore_se": {
 			"frame": {
 				"x": 1908,
 				"y": 684,
@@ -1800,7 +1800,7 @@
 				"h": 128
 			}
 		},
-		"water_0": {
+		"shore_sw": {
 			"frame": {
 				"x": 4,
 				"y": 820,
@@ -1820,7 +1820,7 @@
 				"h": 128
 			}
 		},
-		"water_1": {
+		"tilled": {
 			"frame": {
 				"x": 140,
 				"y": 820,
@@ -1840,7 +1840,7 @@
 				"h": 128
 			}
 		},
-		"water_2": {
+		"tree_0": {
 			"frame": {
 				"x": 276,
 				"y": 820,
@@ -1860,9 +1860,89 @@
 				"h": 128
 			}
 		},
-		"watered": {
+		"tree_1": {
 			"frame": {
 				"x": 412,
+				"y": 820,
+				"w": 128,
+				"h": 128
+			},
+			"rotated": false,
+			"trimmed": false,
+			"spriteSourceSize": {
+				"x": 0,
+				"y": 0,
+				"w": 128,
+				"h": 128
+			},
+			"sourceSize": {
+				"w": 128,
+				"h": 128
+			}
+		},
+		"water_0": {
+			"frame": {
+				"x": 548,
+				"y": 820,
+				"w": 128,
+				"h": 128
+			},
+			"rotated": false,
+			"trimmed": false,
+			"spriteSourceSize": {
+				"x": 0,
+				"y": 0,
+				"w": 128,
+				"h": 128
+			},
+			"sourceSize": {
+				"w": 128,
+				"h": 128
+			}
+		},
+		"water_1": {
+			"frame": {
+				"x": 684,
+				"y": 820,
+				"w": 128,
+				"h": 128
+			},
+			"rotated": false,
+			"trimmed": false,
+			"spriteSourceSize": {
+				"x": 0,
+				"y": 0,
+				"w": 128,
+				"h": 128
+			},
+			"sourceSize": {
+				"w": 128,
+				"h": 128
+			}
+		},
+		"water_2": {
+			"frame": {
+				"x": 820,
+				"y": 820,
+				"w": 128,
+				"h": 128
+			},
+			"rotated": false,
+			"trimmed": false,
+			"spriteSourceSize": {
+				"x": 0,
+				"y": 0,
+				"w": 128,
+				"h": 128
+			},
+			"sourceSize": {
+				"w": 128,
+				"h": 128
+			}
+		},
+		"watered": {
+			"frame": {
+				"x": 956,
 				"y": 820,
 				"w": 128,
 				"h": 128

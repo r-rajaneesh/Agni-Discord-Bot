@@ -1,8 +1,11 @@
 // Pure display maths: how sharp to render on this screen, and player colours as tints
 
-/** Device pixels per CSS pixel the game renders at: the screen's ratio, capped at 2 to bound GPU cost */
+/**
+ * Device pixels per CSS pixel the game renders at: the screen's ratio, capped at 2 to bound GPU cost, and rounded
+ * down so a 48 px tile is a whole number of device pixels (fractional tile sizes leave seams between tiles)
+ */
 export function deviceScale(dpr: number): number {
-	return Number.isFinite(dpr) && dpr > 1 ? Math.min(dpr, 2) : 1;
+	return Number.isFinite(dpr) && dpr > 1 ? Math.floor(Math.min(dpr, 2) * 48) / 48 : 1;
 }
 
 /** The canvas size in device pixels for a CSS box, and the zoom that shows it at CSS size */

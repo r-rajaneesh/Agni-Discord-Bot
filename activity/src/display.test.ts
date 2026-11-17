@@ -10,6 +10,15 @@ test("deviceScale follows the screen up to 2", () => {
 	expect(deviceScale(Number.NaN)).toBe(1);
 });
 
+test("a tile is always a whole number of device pixels, so terrain tiles without seams", () => {
+	for (const d of [1, 1.1, 1.2, 1.25, 1.33, 1.5, 1.65, 1.75, 2, 2.625, 3]) {
+		const k = deviceScale(d);
+		expect(Number.isInteger(48 * k)).toBe(true);
+		expect(k).toBeLessThanOrEqual(Math.max(1, d));
+		expect(k).toBeGreaterThan(Math.min(d, 2) - 1 / 48);
+	}
+});
+
 test("canvasSize renders k device pixels per CSS pixel and zooms back to CSS size", () => {
 	expect(canvasSize(360, 640, 2)).toEqual({ width: 720, height: 1280, zoom: 0.5 });
 	expect(canvasSize(1280, 800, 1)).toEqual({ width: 1280, height: 800, zoom: 1 });

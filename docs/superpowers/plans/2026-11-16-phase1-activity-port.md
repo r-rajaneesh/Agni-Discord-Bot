@@ -724,16 +724,23 @@ Hostile wildlife, hunting and livestock (cattle management) are Phase 3.1 and bu
 
 ---
 
-### Task 19: HD asset pipeline
+### Task 19: HD asset pipeline (smooth vector art)
 
-Owner decision (2026-11-17): all game assets are upgraded to **HD pixel art at a 32×32 source tile size**. The art comes from **CC0 art packs** (for example Kenney; CC0 means free for commercial use with no attribution required), plus custom-made sprites only where a pack has no match. The procedural, code-drawn textures are retired.
+> **Owner decision (2026-11-17, final):** smooth, non-pixel art for the whole game. This replaces the earlier 32 px pixel-art plan, because no consistent CC0 pixel set exists. The style is flat vector illustration.
+> - Sources: CC0 vector packs plus original SVGs in the same style.
+> - Atlases are rasterised from SVG at `SRC_TILE = 128` and drawn at 48 px (`DRAW_SCALE = 0.375`) with linear filtering (Phaser `pixelArt: false`, `antialias: true`).
+> - `activity/dist` must stay under 25 MB.
+> - Everything else in the task below still applies (manifest, atlases, licences, tests, smoke screenshots), with "pixel" read as "vector".
+
+
+(Superseded art spec; see the quote above.) The art comes from **CC0 art packs** (for example Kenney; CC0 means free for commercial use with no attribution required), plus custom-made sprites only where a pack has no match. The procedural, code-drawn textures are retired.
 
 **Files:**
 - Create: `activity/public/assets/` holding texture atlases (`tiles.png` + `tiles.json`, `characters.png` + `.json`, `animals.png` + `.json`, `items.png` + `.json`, `ui.png` + `.json`) in Phaser's JSON-hash atlas format
 - Create: `activity/public/assets/LICENSES.md`, listing every source pack with its URL, licence (CC0 only, unless the owner approves otherwise) and which frames came from it; custom sprites are marked "original (Agni)"
 - Create: `activity/src/assets/manifest.ts`, the typed map from game concepts to atlas frame names
-- Create: `scripts/build-atlas.ts`, a Bun script that packs the source PNGs in `art/` into the atlases (so art changes are reproducible)
-- Create: `art/`, holding the source PNGs at 32×32 per tile and frame, with each pack's licence file kept beside it
+- Create: `scripts/build-atlas.ts`, a Bun script that rasterises the SVGs in `art/` (via a pinned build-time rasteriser such as @resvg/resvg-js) and packs them into the atlases (so art changes are reproducible)
+- Create: `art/`, holding the source SVGs (and any CC0 PNG/SVG pack files used), with each pack's licence file kept beside it
 - Modify: `activity/src/textures.ts` (it becomes a thin loader backed by the manifest), `activity/src/chunkRenderer.ts`, `activity/src/playerSprite.ts`, `activity/src/scenes/World.ts`, and the animal sprites from Task 17
 - Test: `activity/src/assets/manifest.test.ts`
 
@@ -741,8 +748,8 @@ Owner decision (2026-11-17): all game assets are upgraded to **HD pixel art at a
 - Produces:
   ```ts
   // activity/src/assets/manifest.ts
-  export const SRC_TILE = 32;            // source pixels per tile
-  export const DRAW_SCALE = 1.5;         // 48 screen px per tile, same as before
+  export const SRC_TILE = 128;           // atlas pixels per tile (rasterised from SVG)
+  export const DRAW_SCALE = 0.375;       // 48 screen px per tile, same as before
   export type TAtlas = "tiles" | "characters" | "animals" | "items" | "ui";
   export interface TFrameRef { atlas: TAtlas; frame: string }
   export const TERRAIN_FRAMES: Record<number, TFrameRef[]>;   // every T value → 1..n variants (grass picks a variant by tile hash)

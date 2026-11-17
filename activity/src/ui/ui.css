@@ -1,0 +1,521 @@
+/* Game overlays. System fonts only: the Activity loads nothing from outside its origin. */
+.ui {
+	--ink: #e9e2cf;
+	--muted: #a9a290;
+	--gold: #f2c14e;
+	--bad: #e5735c;
+	--good: #8fcf6b;
+	--panel: rgba(20, 24, 31, 0.94);
+	--chip: rgba(10, 12, 16, 0.72);
+	--line: rgba(233, 226, 207, 0.16);
+	--gap: 8px;
+	--touch-h: 0px;
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	color: var(--ink);
+	font: 14px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	text-align: left;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-tap-highlight-color: transparent;
+	/* Discord's mobile frame has notches and a home bar */
+	padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.ui button,
+.ui input,
+.ui .panel {
+	pointer-events: auto;
+}
+.ui [hidden] {
+	display: none !important;
+}
+
+/* ---------- buttons ---------- */
+.ui .btn {
+	font: inherit;
+	color: var(--ink);
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 6px 10px;
+	min-height: 32px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.ui .btn:hover {
+	background: rgba(255, 255, 255, 0.16);
+}
+.ui .btn:active {
+	transform: translateY(1px);
+}
+.ui .btn:focus-visible,
+.ui .slot:focus-visible,
+.ui .lobby:focus-visible,
+.ui .inv-equip:focus-visible {
+	outline: 2px solid var(--gold);
+	outline-offset: 1px;
+}
+.ui .btn-primary {
+	background: var(--gold);
+	color: #1b1608;
+	border-color: transparent;
+	font-weight: 600;
+}
+.ui .btn-primary:hover {
+	background: #f7d27a;
+}
+
+/* ---------- HUD ---------- */
+.ui .hud {
+	position: absolute;
+	top: calc(var(--gap) + env(safe-area-inset-top));
+	left: calc(var(--gap) + env(safe-area-inset-left));
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-width: calc(100% - 132px);
+}
+.ui .hud-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+}
+.ui .stat,
+.ui .energy,
+.ui .btn-place {
+	background: var(--chip);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 3px 8px;
+	min-height: 26px;
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	font-variant-numeric: tabular-nums;
+}
+.ui .btn-place {
+	color: var(--gold);
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.ui .energy {
+	position: relative;
+	width: 84px;
+	padding: 0;
+	overflow: hidden;
+}
+.ui .energy-fill {
+	position: absolute;
+	inset: 0 auto 0 0;
+	background: linear-gradient(90deg, #5aa64a, var(--good));
+	opacity: 0.55;
+	transition: width 0.3s;
+}
+.ui .energy-text {
+	position: relative;
+	padding: 0 8px;
+}
+.ui .hud-buttons {
+	position: absolute;
+	top: calc(var(--gap) + env(safe-area-inset-top));
+	right: calc(var(--gap) + env(safe-area-inset-right));
+	display: flex;
+	gap: 4px;
+}
+.ui .btn-icon {
+	padding: 4px 8px;
+	font-size: 16px;
+}
+.ui .btn-store {
+	color: var(--gold);
+}
+
+/* ---------- toasts ---------- */
+.ui .toasts {
+	position: absolute;
+	top: calc(76px + env(safe-area-inset-top));
+	left: 50%;
+	transform: translateX(-50%);
+	width: min(360px, calc(100% - 2 * var(--gap)));
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	z-index: 3;
+}
+.ui .toast {
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-left: 3px solid var(--good);
+	border-radius: 6px;
+	padding: 6px 12px;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow-wrap: anywhere;
+	animation: toast-in 0.15s ease-out;
+}
+.ui .toast-bad {
+	border-left-color: var(--bad);
+}
+@keyframes toast-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+}
+
+/* ---------- hotbar ---------- */
+.ui .hotbar {
+	position: absolute;
+	left: 50%;
+	bottom: calc(var(--gap) + var(--touch-h) + env(safe-area-inset-bottom));
+	transform: translateX(-50%);
+	display: flex;
+	gap: 4px;
+	padding: 4px;
+	max-width: calc(100% - 2 * var(--gap));
+	box-sizing: border-box;
+	overflow-x: auto;
+	scrollbar-width: none;
+	background: var(--chip);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	pointer-events: auto;
+}
+.ui .slot {
+	position: relative;
+	flex: 0 0 auto;
+	width: 44px;
+	height: 44px;
+	padding: 0;
+	font: inherit;
+	color: var(--ink);
+	background: rgba(255, 255, 255, 0.06);
+	border: 2px solid transparent;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.ui .slot-on {
+	border-color: var(--gold);
+	background: rgba(242, 193, 78, 0.18);
+}
+.ui .slot-icon {
+	font-size: 22px;
+	line-height: 40px;
+}
+.ui .slot-key {
+	position: absolute;
+	top: 1px;
+	left: 3px;
+	font-size: 10px;
+	color: var(--muted);
+}
+.ui .slot-count {
+	position: absolute;
+	right: 3px;
+	bottom: 1px;
+	font-size: 11px;
+	font-weight: 600;
+	text-shadow: 0 1px 2px #000;
+}
+
+/* ---------- panels ---------- */
+.ui .panels {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: calc(64px + env(safe-area-inset-top)) var(--gap) calc(var(--gap) + var(--touch-h) + 60px + env(safe-area-inset-bottom));
+	box-sizing: border-box;
+	z-index: 2;
+}
+.ui .panel {
+	width: min(420px, 100%);
+	max-height: 100%;
+	display: flex;
+	flex-direction: column;
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+	overflow: hidden;
+}
+.ui .panel-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 8px 8px 14px;
+	border-bottom: 1px solid var(--line);
+}
+.ui .panel h2 {
+	margin: 0;
+	font-size: 16px;
+	color: var(--gold);
+}
+.ui .panel h3 {
+	margin: 10px 0 6px;
+	font-size: 12px;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+.ui .panel h3:first-child {
+	margin-top: 0;
+}
+.ui .panel p {
+	margin: 0 0 8px;
+}
+.ui .btn-close {
+	min-height: 28px;
+	padding: 2px 9px;
+	background: transparent;
+	border-color: transparent;
+}
+.ui .panel-body {
+	padding: 12px 14px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+}
+.ui .panel-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 4px;
+}
+.ui .muted {
+	color: var(--muted);
+}
+.ui .small {
+	font-size: 12px;
+}
+.ui .bad {
+	color: var(--bad);
+}
+.ui .big {
+	font-size: 22px;
+	font-weight: 700;
+	color: var(--gold);
+}
+.ui .note {
+	color: var(--good);
+	min-height: 1.3em;
+}
+
+/* rows: shop and lists */
+.ui .list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.ui .row {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	grid-template-areas: "name price" "actions actions";
+	gap: 4px 8px;
+	align-items: center;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--line);
+}
+.ui .row-name {
+	grid-area: name;
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	min-width: 0;
+}
+.ui .row-icon {
+	font-size: 18px;
+}
+.ui .row-price {
+	grid-area: price;
+	font-variant-numeric: tabular-nums;
+	color: var(--gold);
+	white-space: nowrap;
+}
+.ui .row-actions {
+	grid-area: actions;
+	display: flex;
+	gap: 4px;
+	justify-content: flex-end;
+}
+@media (min-width: 480px) {
+	.ui .row {
+		grid-template-columns: 1fr auto auto;
+		grid-template-areas: "name price actions";
+	}
+}
+
+/* inventory */
+.ui .inv-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+	gap: 6px;
+}
+.ui .inv-cell {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	padding: 8px 4px;
+	font: inherit;
+	color: var(--ink);
+	background: rgba(255, 255, 255, 0.05);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	text-align: center;
+}
+.ui .inv-equip {
+	cursor: pointer;
+}
+.ui .inv-equip:hover {
+	border-color: var(--gold);
+}
+.ui .inv-icon {
+	font-size: 24px;
+}
+.ui .inv-name {
+	font-size: 12px;
+}
+.ui .inv-count {
+	font-size: 12px;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* store */
+.ui .product {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 6px 10px;
+	align-items: center;
+	padding: 10px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: rgba(242, 193, 78, 0.06);
+}
+.ui .product-info {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.ui .product .btn {
+	justify-self: end;
+	min-width: 72px;
+}
+
+/* lobbies */
+.ui .lobby {
+	display: grid;
+	grid-template-columns: 40px 1fr auto;
+	gap: 8px;
+	align-items: center;
+	width: 100%;
+	padding: 8px 10px;
+	font: inherit;
+	color: var(--ink);
+	text-align: left;
+	background: rgba(255, 255, 255, 0.05);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	cursor: pointer;
+}
+.ui .lobby:hover {
+	border-color: var(--gold);
+}
+.ui .lobby-here {
+	border-color: var(--gold);
+	background: rgba(242, 193, 78, 0.16);
+	cursor: default;
+}
+.ui .lobby-n {
+	font-weight: 700;
+	color: var(--gold);
+	font-variant-numeric: tabular-nums;
+}
+.ui .lobby-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ui .lobby-count {
+	font-size: 12px;
+	color: var(--muted);
+	white-space: nowrap;
+}
+
+/* ---------- chat hook (Task 16) ---------- */
+.ui .chat-input {
+	position: absolute;
+	left: var(--gap);
+	bottom: calc(var(--gap) + var(--touch-h) + 60px + env(safe-area-inset-bottom));
+	width: min(360px, calc(100% - 2 * var(--gap)));
+	box-sizing: border-box;
+}
+
+/* ---------- touch controls ---------- */
+.ui .touch {
+	display: none;
+}
+@media (pointer: coarse) {
+	.ui {
+		/* Room the stick and buttons take at the bottom; the hotbar and panels sit above it */
+		--touch-h: 136px;
+	}
+	.ui .touch {
+		display: block;
+	}
+	.ui .stick {
+		position: absolute;
+		left: calc(16px + env(safe-area-inset-left));
+		bottom: calc(16px + env(safe-area-inset-bottom));
+		width: 120px;
+		height: 120px;
+		border-radius: 50%;
+		background: rgba(10, 12, 16, 0.45);
+		border: 2px solid var(--line);
+		pointer-events: auto;
+		touch-action: none;
+	}
+	.ui .knob {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		width: 52px;
+		height: 52px;
+		margin: -26px 0 0 -26px;
+		border-radius: 50%;
+		background: rgba(233, 226, 207, 0.55);
+		pointer-events: none;
+	}
+	.ui .touch-btn {
+		position: absolute;
+		width: 60px;
+		height: 60px;
+		border-radius: 50%;
+		font: 700 20px/1 system-ui, sans-serif;
+		color: var(--ink);
+		background: rgba(10, 12, 16, 0.55);
+		border: 2px solid var(--line);
+		touch-action: none;
+	}
+	.ui .btn-a {
+		right: calc(16px + env(safe-area-inset-right));
+		bottom: calc(52px + env(safe-area-inset-bottom));
+		border-color: var(--gold);
+		color: var(--gold);
+	}
+	.ui .btn-b {
+		right: calc(84px + env(safe-area-inset-right));
+		bottom: calc(16px + env(safe-area-inset-bottom));
+	}
+	.ui .touch-btn:active {
+		background: rgba(242, 193, 78, 0.3);
+	}
+}

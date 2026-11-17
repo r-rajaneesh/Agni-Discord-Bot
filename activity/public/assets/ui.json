@@ -1,0 +1,54 @@
+{
+	"frames": {
+		"crown": {
+			"frame": {
+				"x": 4,
+				"y": 4,
+				"w": 64,
+				"h": 40
+			},
+			"rotated": false,
+			"trimmed": false,
+			"spriteSourceSize": {
+				"x": 0,
+				"y": 0,
+				"w": 64,
+				"h": 40
+			},
+			"sourceSize": {
+				"w": 64,
+				"h": 40
+			}
+		},
+		"shadow": {
+			"frame": {
+				"x": 76,
+				"y": 4,
+				"w": 64,
+				"h": 24
+			},
+			"rotated": false,
+			"trimmed": false,
+			"spriteSourceSize": {
+				"x": 0,
+				"y": 0,
+				"w": 64,
+				"h": 24
+			},
+			"sourceSize": {
+				"w": 64,
+				"h": 24
+			}
+		}
+	},
+	"meta": {
+		"app": "scripts/build-atlas.ts",
+		"image": "ui.png",
+		"format": "RGBA8888",
+		"size": {
+			"w": 256,
+			"h": 64
+		},
+		"scale": "1"
+	}
+}

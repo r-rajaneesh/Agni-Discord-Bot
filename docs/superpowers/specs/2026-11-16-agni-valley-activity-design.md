@@ -209,7 +209,9 @@ Calls I made, open to correction:
 Each phase gets its own plan. Phase 1's plan is `docs/superpowers/plans/2026-11-16-phase1-activity-port.md`.
 
 ## 8. Art direction (owner, 2026-11-17)
-- All game assets are upgraded to **HD pixel art at a 32×32 source tile size**. The art comes from **CC0 art packs** (e.g. Kenney), plus custom sprites that match their style. Animated walk cycles, crop growth stages and water shimmer. Plan Task 19.
+- **Smooth, non-pixel art for the entire game** (owner, 2026-11-17; this replaces the earlier pixel-art choice after research found no consistent CC0 32 px pixel set). Flat vector illustration style. Textures are smoothed (linear filtering) and rendered from high-resolution sources (128 px per tile in the atlas, drawn at 48 px on screen) so they stay sharp on high-DPI phones.
+- Sources: **CC0 vector packs** (e.g. Kenney's vector top-down sets), plus **original SVG art** in the same flat style for anything missing (crops with growth stages, items, top-down animals, the house and portal). Every source and licence is recorded.
+- Characters and animals are top-down: walking uses a bob or squash animation and rotation or facing variants instead of pixel walk cycles. Crops have growth stages. Water has a gentle animated shimmer. Plan Task 19.
 
 ## 9. Left to the builder
 - UI layout, within the chosen art direction.

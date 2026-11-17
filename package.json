@@ -13,6 +13,7 @@
 		"activity:typecheck": "cd activity && bunx tsc --noEmit"
 	},
 	"devDependencies": {
+		"@resvg/resvg-js": "2.6.2",
 		"@types/bun": "latest",
 		"@types/fs-extra": "^11.0.4",
 		"mongodb-memory-server": "^11.3.0"

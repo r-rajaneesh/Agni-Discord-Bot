@@ -6,6 +6,7 @@ import type { TClientMsg, TDir, TPlayerView, TServerMsg } from "@game/protocol";
 import { ClientState } from "../state";
 import { CHAT_KEEP, ChatPanel } from "./chat";
 import { EmotePanel } from "./emotes";
+import { itemIcon } from "./dom";
 import { hotbarItems } from "./hotbar";
 import { placeName } from "./hud";
 import { formatINR } from "./store";
@@ -22,6 +23,18 @@ describe("placeName", () => {
 
 test("hotbar: tools, then held seeds only", () => {
 	expect(hotbarItems({ wheat_seed: 2, parsnip_seed: 5, parsnip: 9, pumpkin_seed: 0 })).toEqual(["hoe", "watering_can", "axe", "pickaxe", "parsnip_seed", "wheat_seed"]);
+});
+
+test("item icons are frames of the items atlas; an unknown item shows ❔", () => {
+	installDom();
+	const seed = fake(itemIcon("wheat_seed", "slot-icon"));
+	expect(seed.classList.contains("item-icon")).toBe(true);
+	expect(seed.style.backgroundImage).toBe("url(assets/items.png)");
+	expect(seed.style.backgroundPosition).toMatch(/^[\d.]+% [\d.]+%$/);
+	expect(fake(itemIcon("wheat", "slot-icon")).style.backgroundPosition).not.toBe(seed.style.backgroundPosition);
+	const unknown = fake(itemIcon("nope", "slot-icon"));
+	expect(unknown.textContent).toBe("❔");
+	expect(unknown.classList.contains("item-icon")).toBe(false);
 });
 
 test("store prices are rupees from paise", () => {

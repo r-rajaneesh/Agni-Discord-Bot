@@ -32,7 +32,7 @@ export class InventoryPanel extends Panel {
 				cell.title = `Equip ${def!.name}`;
 				cell.addEventListener("click", () => this.equip(id));
 			}
-			cell.append(el("span", "inv-icon", itemIcon(id)), el("span", "inv-name", def?.name ?? id), el("span", "inv-count", `×${inv[id]}`));
+			cell.append(itemIcon(id, "inv-icon"), el("span", "inv-name", def?.name ?? id), el("span", "inv-count", `×${inv[id]}`));
 			grid.append(cell);
 		}
 		this.body.replaceChildren(grid);

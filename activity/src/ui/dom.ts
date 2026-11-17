@@ -1,6 +1,6 @@
 // Small DOM helpers for the overlays. Text always goes in through textContent, never innerHTML.
 import { ITEMS } from "@game/data/items";
-import itemsAtlas from "../../public/assets/items.json";
+import itemRects from "../assets/items.frames.json";
 import { ITEM_FRAMES } from "../assets/manifest";
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -45,17 +45,18 @@ export class Panel {
 	}
 }
 
-type TAtlasJson = { frames: Record<string, { frame: { x: number; y: number; w: number; h: number } }>; meta: { size: { w: number; h: number } } };
-const SHEET = itemsAtlas as TAtlasJson;
+// Frame rects of items.png, written by scripts/build-atlas.ts beside the atlas
+type TRects = { size: { w: number; h: number }; frames: Record<string, { x: number; y: number; w: number; h: number }> };
+const SHEET = itemRects as TRects;
 
 /**
  * An item's icon from the items atlas, as a span whose background is that frame. Percentages keep it right at
  * any size the CSS gives the span. An unknown item shows ❔.
  */
 export function itemIcon(id: string, cls: string): HTMLSpanElement {
-	const f = ITEMS[id] ? SHEET.frames[ITEM_FRAMES[id]!.frame]?.frame : undefined;
+	const f = ITEMS[id] ? SHEET.frames[ITEM_FRAMES[id]!.frame] : undefined;
 	if (!f) return el("span", cls, "❔");
-	const { w, h } = SHEET.meta.size;
+	const { w, h } = SHEET.size;
 	const s = el("span", `${cls} item-icon`);
 	s.style.backgroundImage = "url(assets/items.png)";
 	s.style.backgroundSize = `${(w / f.w) * 100}% ${(h / f.h) * 100}%`;

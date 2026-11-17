@@ -4,6 +4,7 @@ import Phaser from "phaser";
 import type { TEmote } from "@game/data/emotes";
 import type { TDir, TPlayerView } from "@game/protocol";
 import { CHARACTER_DETAIL_FRAMES, CHARACTER_FRAMES, CROWN_FRAME, DRAW_SCALE, SHADOW_FRAME, TILE } from "../assets/manifest";
+import { tintOf } from "../display";
 import { bodyAnim, detailAnim } from "../textures";
 
 const BUBBLE_MS = 4000;
@@ -26,12 +27,6 @@ const ANIMS: Record<TEmote["anim"], Omit<Phaser.Types.Tweens.TweenBuilderConfig,
 	sit: { scaleY: 0.75, y: 3 * PX, duration: 150, yoyo: true, hold: 2000 },
 	lie: { angle: 90, y: 3 * PX, duration: 200, yoyo: true, hold: 2200 },
 };
-
-/** The player's colour as a tint; anything unreadable leaves the shirt white */
-export function tintOf(colour: string): number {
-	const m = /^#([0-9a-f]{6})$/i.exec(colour);
-	return m ? parseInt(m[1]!, 16) : 0xffffff;
-}
 
 export class PlayerSprite extends Phaser.GameObjects.Container {
 	// Emotes move the figure; the shadow stays on the ground

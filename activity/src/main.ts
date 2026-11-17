@@ -3,6 +3,7 @@ import { PROTOCOL_VERSION } from "@game/protocol";
 import { setupDiscord } from "./discord";
 import { GameClient } from "./client";
 import { Input } from "./input";
+import { canvasSize, deviceScale } from "./display";
 import { Connection, wsUrl } from "./net";
 import { Predictor } from "./predict";
 import { Boot } from "./scenes/Boot";
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
 	let world: World | null = null;
 	let ui: GameUI | null = null;
 	let input: Input | null = null;
+	let resize: ResizeObserver | null = null;
 	let raf = 0;
 	// Shown over the game while the socket is reconnecting
 	const banner = document.createElement("div");
@@ -75,9 +77,19 @@ async function main(): Promise<void> {
 				antialias: true,
 				roundPixels: true,
 				render: { mipmapFilter: "LINEAR_MIPMAP_LINEAR" },
-				scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+				// Rendered at device resolution (up to 2×) and zoomed back to CSS size, so the art stays sharp on HiDPI
+				// screens. Scenes zoom their cameras by the same factor, keeping a tile 48 CSS px.
+				scale: { mode: Phaser.Scale.NONE, ...canvasSize(app.clientWidth, app.clientHeight, deviceScale(devicePixelRatio)) },
 				scene: [new Boot(), world],
 			});
+			const g = game;
+			resize = new ResizeObserver(() => {
+				const size = canvasSize(app.clientWidth, app.clientHeight, deviceScale(devicePixelRatio));
+				// Resize first: setZoom then restyles the canvas for the new size (resize alone skips it at zoom 1)
+				g.scale.resize(size.width, size.height);
+				g.scale.setZoom(size.zoom);
+			});
+			resize.observe(app);
 			const gameUi = new GameUI(app, state, (m) => client.send(m));
 			ui = gameUi;
 			input = new Input(
@@ -106,6 +118,8 @@ async function main(): Promise<void> {
 			cancelAnimationFrame(raf);
 			input?.destroy();
 			input = null;
+			resize?.disconnect();
+			resize = null;
 			game?.destroy(true);
 			game = null;
 			world = null;

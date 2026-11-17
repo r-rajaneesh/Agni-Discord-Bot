@@ -54,7 +54,15 @@ export class World extends Phaser.Scene {
 			.setScrollFactor(0)
 			.setDepth(NIGHT_DEPTH)
 			.setAlpha(0);
-		this.scale.on(Phaser.Scale.Events.RESIZE, (size: Phaser.Structs.Size) => this.night.setSize(size.width, size.height));
+		// The canvas is k device pixels per CSS pixel; the camera zooms by k so a tile stays 48 CSS px.
+		// The night veil ignores scroll and covers the whole canvas at any zoom.
+		const fit = () => {
+			this.cameras.main.setZoom(1 / this.scale.zoom);
+			this.night.setSize(this.scale.width, this.scale.height);
+		};
+		this.scale.on(Phaser.Scale.Events.RESIZE, fit);
+		this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.off(Phaser.Scale.Events.RESIZE, fit));
+		fit();
 		this.cameras.main.setRoundPixels(true);
 		this.rebuild();
 		this.ready = true;

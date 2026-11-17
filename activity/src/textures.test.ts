@@ -4,7 +4,7 @@ import { DAY_MS, HOUSE_DOOR, createLand, createLobby, tileKey } from "@game/engi
 import { T } from "@game/map";
 import { LAND_GATE, worldTerrain } from "@game/world";
 import { WATER_FRAME_MS } from "./assets/manifest";
-import { hasWater, tileLayers } from "./textures";
+import { isWaterFrame, tileLayers } from "./textures";
 
 const land = () => createLand("land:me", "me", 42, 0);
 
@@ -49,6 +49,9 @@ test("locked chunk tiles draw their real terrain, dimmed, with a fence on the ed
 	expect(inner.some((l) => l.startsWith("fence"))).toBe(false);
 	// (2,0) is locked; its west column borders unlocked chunk (1,0), so that fence runs down the tile
 	expect(tileLayers(inst, 2 * 16, 4, 0).at(-1)).toBe("fence_v");
+	// With (2,0) open too, locked (2,1)'s top-left tile borders open land west and north: both fences
+	inst.unlocked.add("2,0");
+	expect(tileLayers(inst, 32, 16, 0).filter((l) => l.startsWith("fence"))).toEqual(["fence_v", "fence_h"]);
 });
 
 test("tilled, watered and growing crops on land", () => {
@@ -91,7 +94,39 @@ test("water shimmers: a tile steps through its frames over time", () => {
 	for (let i = 0; i < 3; i++) seen.add(tileLayers(inst, w.x, w.y, i * WATER_FRAME_MS)[0]!);
 	expect([...seen].every((k) => /^water_\d$/.test(k))).toBe(true);
 	expect(seen.size).toBe(3);
-	expect(hasWater(tileLayers(inst, w.x, w.y, 0))).toBe(true);
+	expect(isWaterFrame(tileLayers(inst, w.x, w.y, 0)[0]!)).toBe(true);
+	expect(isWaterFrame("shore_5")).toBe(false);
+});
+
+test("water gets a bank on each side that borders land, and none toward a bridge", () => {
+	const inst = createLobby(1, "L", null, 0);
+	// The river's west bank: land to the west, water to the east
+	const w = findWorld(T.water);
+	while (worldTerrain(w.x - 1, w.y) === T.water) w.x--;
+	const at = (x: number, y: number) => tileLayers(inst, x, y, 0);
+	const mask = (x: number, y: number) => (worldTerrain(x, y - 1) === T.water || worldTerrain(x, y - 1) === T.bridge ? 0 : 1) | (worldTerrain(x + 1, y) === T.water || worldTerrain(x + 1, y) === T.bridge ? 0 : 2) | (worldTerrain(x, y + 1) === T.water || worldTerrain(x, y + 1) === T.bridge ? 0 : 4) | 8;
+	expect(at(w.x, w.y)[1]).toBe(`shore_${mask(w.x, w.y)}`);
+	// Next to the bridge the river runs on: no bank on that side
+	const b = findWorld(T.bridge);
+	let x = b.x;
+	while (worldTerrain(x, b.y) === T.bridge) x--;
+	const bank = at(x, b.y)[1];
+	expect(bank === undefined || (Number(bank.slice(6)) & 2) === 0).toBe(true);
+});
+
+test("the shop front: a sign over the doors, posts only at the ends, windows on alternate tiles", () => {
+	const inst = createLobby(1, "L", null, 0);
+	const d = findWorld(T.door);
+	while (worldTerrain(d.x - 1, d.y) === T.door) d.x--;
+	expect(tileLayers(inst, d.x, d.y, 0)).toEqual(["door"]);
+	expect(tileLayers(inst, d.x, d.y - 1, 0)).toEqual(["shop_sign_l"]);
+	expect(tileLayers(inst, d.x + 1, d.y - 1, 0)).toEqual(["shop_sign_r"]);
+	let l = d.x;
+	while (worldTerrain(l - 1, d.y) === T.wall) l--;
+	expect(tileLayers(inst, l, d.y, 0)).toEqual(["shop_lower_l"]);
+	expect(tileLayers(inst, l, d.y - 1, 0)).toEqual(["shop_upper_l"]);
+	const mids = [1, 2].map((i) => tileLayers(inst, l + i, d.y, 0)[0]);
+	expect(mids.sort()).toEqual(["shop_lower_m", "shop_lower_win"]);
 });
 
 test("the shop roof has a ridge on its top row", () => {

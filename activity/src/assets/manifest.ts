@@ -36,10 +36,19 @@ export const TILES = {
 	roof: tile("roof"),
 	roofRidge: tile("roof_ridge"),
 	houseDoor: tile("house_door"),
+	shopDoor: tile("door"),
+	shopUpper: { l: tile("shop_upper_l"), m: tile("shop_upper_m"), r: tile("shop_upper_r") },
+	shopLower: { l: tile("shop_lower_l"), m: tile("shop_lower_m"), r: tile("shop_lower_r") },
+	shopUpperWin: tile("shop_upper_win"),
+	shopLowerWin: tile("shop_lower_win"),
+	shopSign: { l: tile("shop_sign_l"), r: tile("shop_sign_r") },
 	houseRoof: { l: tile("house_roof_l"), m: tile("house_roof_m"), r: tile("house_roof_r") },
 	houseWall: { l: tile("house_wall_l"), m: tile("house_wall_m"), r: tile("house_wall_r") },
 	houseBase: { l: tile("house_base_l"), m: tile("house_base_m"), r: tile("house_base_r") },
 };
+
+/** Banks drawn over water, by which sides border land: bit 1 north, 2 east, 4 south, 8 west (masks 1 to 15) */
+export const SHORE_FRAMES: Record<number, TFrameRef> = Object.fromEntries(Array.from({ length: 15 }, (_, i) => [i + 1, tile(`shore_${i + 1}`)]));
 
 /** A public field of each crop: tilled rows with ripe plants */
 export const FIELD_FRAMES: Record<string, TFrameRef> = Object.fromEntries(Object.keys(CROPS).map((id) => [id, tile(`field_${id}`)]));
@@ -52,8 +61,8 @@ export const TERRAIN_FRAMES: Record<number, TFrameRef[]> = {
 	[T.tree]: series("tiles", "tree", 2),
 	[T.rock]: series("tiles", "rock", 2),
 	[T.farmland]: [tile("farmland")],
-	[T.wall]: [tile("wall")],
-	[T.door]: [tile("door")],
+	[T.wall]: [...Object.values(TILES.shopUpper), ...Object.values(TILES.shopLower), TILES.shopUpperWin, TILES.shopLowerWin, ...Object.values(TILES.shopSign)],
+	[T.door]: [TILES.shopDoor],
 	[T.bridge]: [tile("bridge")],
 	[T.flowers]: series("tiles", "flowers", 2),
 	[T.roof]: [TILES.roof, TILES.roofRidge],

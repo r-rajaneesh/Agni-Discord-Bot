@@ -8,8 +8,11 @@ export class Boot extends Phaser.Scene {
 	}
 
 	preload(): void {
+		// The canvas is in device pixels; zooming by the same factor lays this out in CSS pixels around the centre
+		const k = 1 / this.scale.zoom;
+		this.cameras.main.setZoom(k);
 		const { width, height } = this.scale;
-		const w = Math.min(320, width - 64);
+		const w = Math.min(320, width / k - 64);
 		const x = (width - w) / 2;
 		const y = height / 2;
 		this.add.rectangle(x, y, w, 12, 0x2a2f3a).setOrigin(0, 0.5);

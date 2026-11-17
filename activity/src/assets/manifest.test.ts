@@ -14,6 +14,7 @@ import {
 	CROWN_FRAME,
 	FIELD_FRAMES,
 	ITEM_FRAMES,
+	SHORE_FRAMES,
 	SHADOW_FRAME,
 	SRC_TILE,
 	TERRAIN_FRAMES,
@@ -73,6 +74,7 @@ describe("atlases", () => {
 		...Object.values(CHARACTER_FRAMES).flat(),
 		...Object.values(CHARACTER_DETAIL_FRAMES).flat(),
 		...WATER_FRAMES,
+		...Object.values(SHORE_FRAMES),
 		...Object.values(TILES).flatMap((v) => ("atlas" in v ? [v] : Object.values(v))),
 		CROWN_FRAME,
 		SHADOW_FRAME,
@@ -89,6 +91,17 @@ describe("atlases", () => {
 			const f = atlas(r.atlas).frames[r.frame]!.frame;
 			expect([r.frame, f.w, f.h]).toEqual([r.frame, SRC_TILE, SRC_TILE]);
 		}
+	});
+
+	test("water has a bank for every combination of land sides", () => {
+		for (let m = 1; m < 16; m++) expect(SHORE_FRAMES[m]).toEqual({ atlas: "tiles", frame: `shore_${m}` });
+	});
+
+	test("the DOM's item rects match the items atlas", () => {
+		const rects = JSON.parse(readFileSync(join(import.meta.dir, "items.frames.json"), "utf8")) as { size: unknown; frames: Record<string, unknown> };
+		const items = atlas("items");
+		expect(rects.size).toEqual(items.meta.size);
+		for (const [name, f] of Object.entries(items.frames)) expect(rects.frames[name]).toEqual(f.frame);
 	});
 
 	test("every sheet is a power of two each way, so it gets mipmaps", () => {

@@ -31,7 +31,6 @@ export const LINK_COOLDOWN_MS = 30_000;
 
 const ACTIONS = ["use", "equip", "sleep", "travel", "buy", "sell", "unlock", "buyProduct"] as const;
 export type TAction = Extract<TClientMsg, { t: (typeof ACTIONS)[number] }>;
-export const isAction = (m: TClientMsg): m is TAction => (ACTIONS as readonly string[]).includes(m.t);
 
 /** What the handlers need from the GameServer */
 export interface TActionCtx {
@@ -56,8 +55,8 @@ export interface TActionCtx {
 	place(s: TSession, rt: TRuntime, base: Omit<TPlayerState, "x" | "y" | "facing">, at: { x: number; y: number; facing: TPlayerState["facing"] } | undefined, prices: TPrices): void;
 }
 
-/** Runs one action, unless the player sent more than MAX_ACTIONS_PER_SEC in the last second */
-export function action(ctx: TActionCtx, s: TSession, m: TAction): Promise<void> | void {
+/** True when the player already sent MAX_ACTIONS_PER_SEC actions in the last second; else counts this one */
+export function limited(ctx: TActionCtx, s: TSession): boolean {
 	const now = ctx.now();
 	s.actions = s.actions.filter((at) => now - at < 1000);
 	if (s.actions.length >= MAX_ACTIONS_PER_SEC) {
@@ -65,9 +64,15 @@ export function action(ctx: TActionCtx, s: TSession, m: TAction): Promise<void> 
 			s.slowedAt = now;
 			ctx.toast(s, "Slow down.", false);
 		}
-		return;
+		return true;
 	}
 	s.actions.push(now);
+	return false;
+}
+
+/** Runs one action, unless the player sent more than MAX_ACTIONS_PER_SEC in the last second */
+export function action(ctx: TActionCtx, s: TSession, m: TAction): Promise<void> | void {
+	if (limited(ctx, s)) return;
 	switch (m.t) {
 		case "use":
 			return use(ctx, s);
@@ -93,8 +98,8 @@ const MESSAGES: Record<string, string> = { insufficient_coins: "Not enough coins
 const say = (msg: string) => MESSAGES[msg] ?? msg;
 const FAILED = "Something went wrong. Try again.";
 
-// A thrown error becomes a failed result
-async function transact(ctx: TActionCtx, legs: TLeg[], meta: TMeta): Promise<{ ok: true; duplicate?: boolean } | { ok: false; message: string }> {
+/** EconomyManager.transact with readable messages; a thrown error becomes a failed result */
+export async function transact(ctx: TActionCtx, legs: TLeg[], meta: TMeta): Promise<{ ok: true; duplicate?: boolean } | { ok: false; message: string }> {
 	try {
 		const r = await ctx.deps.eco.transact(legs, meta);
 		return r.ok ? { ok: true, duplicate: !!r.duplicate } : { ok: false, message: say(r.message) };
@@ -350,10 +355,10 @@ async function oreGem(ctx: TActionCtx, s: TSession) {
  * DMs a Razorpay link for an item. The webhook grants it and PaymentManager pushes the wallet.
  * Runs outside the instance queue: it changes no game state, and a slow payment API must not hold up the lobby.
  */
-async function buyProduct(ctx: TActionCtx, s: TSession, productId: string) {
+export async function buyProduct(ctx: TActionCtx, s: TSession, productId: string) {
 	const product = productById(productId);
-	// Only items are sold; gems are earned in game
-	if (!product || product.kind !== "pass") return ctx.toast(s, "That isn't for sale.", false);
+	// Every product is an item (a pass or cosmetics); gems are earned in game and never sold
+	if (!product) return ctx.toast(s, "That isn't for sale.", false);
 	const { payments, dm, log } = ctx.deps;
 	if (!payments.razorpayEnabled) return ctx.toast(s, "Purchases are not available right now.", false);
 	const key = `${s.userId}:${product.id}`;

@@ -5,6 +5,7 @@ import type { ClientState } from "../state";
 import type { Panel } from "./dom";
 import { ChatPanel } from "./chat";
 import { el } from "./dom";
+import { EmotePanel } from "./emotes";
 import { Hotbar } from "./hotbar";
 import { Hud } from "./hud";
 import { InventoryPanel } from "./inventory";
@@ -26,6 +27,7 @@ export class GameUI {
 	private lobbies: LobbyPanel;
 	private unlock: UnlockPanel;
 	private chat: ChatPanel;
+	private emotes: EmotePanel;
 	private current: Panel | null = null;
 	private useSeq = 0;
 
@@ -35,7 +37,12 @@ export class GameUI {
 		private send: (m: TClientMsg) => void,
 	) {
 		const equip = (item: string) => this.send({ t: "equip", item });
-		this.hud = new Hud(this.root, state, { lobbies: () => this.toggleLobbies(), inventory: () => this.toggleInventory(), store: () => this.open(this.store) });
+		this.hud = new Hud(this.root, state, {
+			lobbies: () => this.toggleLobbies(),
+			inventory: () => this.toggleInventory(),
+			store: () => this.open(this.store),
+			emotes: () => this.toggleEmotes(),
+		});
 		this.toasts = new Toasts(this.root);
 		this.hotbar = new Hotbar(this.root, state, equip);
 		this.inventory = new InventoryPanel(state, equip);
@@ -43,8 +50,9 @@ export class GameUI {
 		this.store = new StorePanel(send);
 		this.lobbies = new LobbyPanel(send);
 		this.unlock = new UnlockPanel(state, send);
+		this.emotes = new EmotePanel(state, send);
 		const layer = el("div", "panels");
-		for (const p of [this.inventory, this.shop, this.store, this.lobbies, this.unlock]) {
+		for (const p of [this.inventory, this.shop, this.store, this.lobbies, this.unlock, this.emotes]) {
 			p.onClose = () => this.close();
 			layer.append(p.root);
 		}
@@ -70,6 +78,10 @@ export class GameUI {
 			case "wallet":
 				if (this.inventory.open) this.inventory.render();
 				if (this.shop.open) this.shop.render();
+				if (this.emotes.open) this.emotes.render();
+				return;
+			case "owned":
+				if (this.emotes.open) this.emotes.render();
 				return;
 			case "welcome":
 				// A new place: the store door or fence the panel was for is gone
@@ -112,6 +124,13 @@ export class GameUI {
 		if (this.lobbies.open) return this.close();
 		this.open(this.lobbies);
 		this.lobbies.request();
+	}
+
+	/** T or the HUD button */
+	toggleEmotes(): void {
+		if (this.emotes.open) return this.close();
+		this.emotes.render();
+		this.open(this.emotes);
 	}
 
 	/** Enter: open the chat box and focus its input */

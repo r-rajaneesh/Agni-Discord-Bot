@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Razorpay from "razorpay";
 import { productById, productBySku, type TProduct } from "../game/data/products";
 import type ClientManager from "./ClientManager";
+import { Ownership, own } from "./models/Cosmetics";
 import { Purchase, Subscription } from "./models/Economy";
 
 const DAY_MS = 86_400_000;
@@ -31,6 +32,7 @@ export default class PaymentManager {
 	// ---------- grant / revoke ----------
 
 	public async grant(userId: string, product: TProduct, sourceKey: string, endsAt?: Date | null) {
+		if (product.kind === "cosmetic") return this.grantCosmetic(userId, product, sourceKey);
 		// Pass: stack on top of any active pass so renewals never lose days
 		const existing = await Subscription.findOne({ sourceId: sourceKey }).lean();
 		if (existing) return { ok: true as const, duplicate: true };
@@ -52,8 +54,20 @@ export default class PaymentManager {
 		return { ok: true as const };
 	}
 
-	/** Refund/chargeback: ends the pass */
+	// One Ownership row per item, keyed `<sourceKey>:<itemId>`. An item the player already owns (say, bought with gems) is left as it is.
+	private async grantCosmetic(userId: string, product: TProduct, sourceKey: string) {
+		let added = 0;
+		for (const itemId of product.items ?? []) if (await own(userId, itemId, "razorpay", `${sourceKey}:${itemId}`)) added++;
+		return added > 0 ? { ok: true as const } : { ok: true as const, duplicate: true };
+	}
+
+	/** Refund/chargeback: ends the pass, or removes the cosmetics this purchase granted (and nothing owned another way) */
 	public async revoke(userId: string, product: TProduct, sourceKey: string) {
+		if (product.kind === "cosmetic") {
+			await Ownership.deleteMany({ userId, sourceKey: { $in: (product.items ?? []).map((id) => `${sourceKey}:${id}`) } });
+			await this.client.gameServer?.pushOwned(userId);
+			return;
+		}
 		await Subscription.updateOne({ sourceId: sourceKey }, { $set: { active: false } });
 	}
 
@@ -64,6 +78,12 @@ export default class PaymentManager {
 			active: true,
 			$or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
 		}));
+	}
+
+	// Sends an open Activity session its wallet and what it owns
+	private async refresh(userId: string) {
+		await this.client.gameServer?.pushWallet(userId);
+		await this.client.gameServer?.pushOwned(userId);
 	}
 
 	private async notify(userId: string, product: TProduct, provider: string) {
@@ -144,7 +164,7 @@ export default class PaymentManager {
 			const result = await this.grant(purchase.userId, product, `razorpay:${payment.id}`);
 			const fresh = result.ok && !("duplicate" in result && result.duplicate);
 			// Refreshes an open Activity session
-			if (fresh) await this.client.gameServer?.pushWallet(purchase.userId);
+			if (fresh) await this.refresh(purchase.userId);
 			const first = await Purchase.findOneAndUpdate(
 				{ _id: purchase._id, notified: false },
 				{ $set: { status: "paid", paymentId: payment.id, paidAt: new Date(), notified: true } },
@@ -202,7 +222,7 @@ export default class PaymentManager {
 				{ upsert: true },
 			);
 			if (!("duplicate" in result && result.duplicate)) {
-				await this.client.gameServer?.pushWallet(userId);
+				await this.refresh(userId);
 				await this.notify(userId, product, "Discord");
 			}
 		}

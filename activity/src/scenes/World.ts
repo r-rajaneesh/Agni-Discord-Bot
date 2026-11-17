@@ -1,5 +1,6 @@
 // The game world: chunked ground, players, night and the camera
 import Phaser from "phaser";
+import { EMOTES } from "@game/data/emotes";
 import { clock, darkness } from "@game/engine";
 import { INTERP_DELAY_MS, InterpBuffer } from "../interp";
 import type { ClientState, THints } from "../state";
@@ -69,6 +70,14 @@ export class World extends Phaser.Scene {
 	say(userId: string, text: string): void {
 		if (userId === this.state.userId) this.me?.say(text);
 		else this.others.get(userId)?.sprite.say(text);
+	}
+
+	/** Plays an emote on a player in view */
+	emote(userId: string, id: string): void {
+		const e = EMOTES[id];
+		if (!e) return;
+		if (userId === this.state.userId) this.me?.emote(e);
+		else this.others.get(userId)?.sprite.emote(e);
 	}
 
 	override update(): void {

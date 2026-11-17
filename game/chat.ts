@@ -8,6 +8,7 @@ export type TChatChannel = "local" | "private" | "global";
 export type TChatCommand =
 	| { kind: "say"; channel: TChatChannel; text: string }
 	| { kind: "mute" | "unmute"; name: string }
+	| { kind: "emote"; id: string }
 	| { kind: "error"; msg: string };
 
 const UNKNOWN = "Unknown command. Use /g, /p, /e, /mute or /unmute.";
@@ -28,7 +29,7 @@ function clip(text: string): string {
 	return text.slice(0, high >= 0xd800 && high <= 0xdbff ? CHAT_MAX - 1 : CHAT_MAX);
 }
 
-/** Reads one typed line: plain text is local, "/g" global, "/p" private, "/mute" and "/unmute" take a name */
+/** Reads one typed line: plain text is local, "/g" global, "/p" private, "/e" an emote, "/mute" and "/unmute" take a name */
 export function parseChat(raw: string): TChatCommand {
 	const line = sanitizeChat(raw);
 	if (!line) return { kind: "error", msg: "Type a message." };
@@ -40,8 +41,8 @@ export function parseChat(raw: string): TChatCommand {
 	const channel = CHANNELS[cmd];
 	if (channel) return rest ? { kind: "say", channel, text: clip(rest) } : { kind: "error", msg: `Type a message after ${cmd}.` };
 	if (cmd === "/mute" || cmd === "/unmute") return rest ? { kind: cmd === "/mute" ? "mute" : "unmute", name: rest } : { kind: "error", msg: `Type a name after ${cmd}.` };
-	// Emotes arrive with Task 18
-	if (cmd === "/e") return { kind: "error", msg: rest ? "Emotes are not available yet." : "Type an emote after /e." };
+	// The server checks the id, as it does for the emote message
+	if (cmd === "/e") return rest ? { kind: "emote", id: rest.toLowerCase() } : { kind: "error", msg: "Type an emote after /e." };
 	return { kind: "error", msg: UNKNOWN };
 }
 

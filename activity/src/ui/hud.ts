@@ -17,6 +17,7 @@ export interface THudActions {
 	lobbies(): void;
 	inventory(): void;
 	store(): void;
+	emotes(): void;
 }
 
 export class Hud {
@@ -51,8 +52,11 @@ export class Hud {
 		const bag = button("🎒", () => actions.inventory(), "btn btn-icon");
 		bag.title = "Inventory (I)";
 		bag.setAttribute("aria-label", "Inventory");
+		const emotes = button("😀", () => actions.emotes(), "btn btn-icon");
+		emotes.title = "Emotes (T)";
+		emotes.setAttribute("aria-label", "Emotes");
 		const store = button("👑 Store", () => actions.store(), "btn btn-store");
-		right.append(bag, store);
+		right.append(emotes, bag, store);
 		parent.append(left, right);
 	}
 

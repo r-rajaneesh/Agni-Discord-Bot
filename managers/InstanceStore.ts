@@ -85,6 +85,37 @@ export default class InstanceStore {
 		);
 	}
 
+	/** False when the player has no saved state */
+	async setEnergy(userId: string, energy: number, at: number): Promise<boolean> {
+		return (await PlayerState.updateOne({ userId }, { $set: { energy, lastEnergyAt: at } })).matchedCount > 0;
+	}
+
+	/** True once the player has a saved position (has played) */
+	async hasPlayer(userId: string): Promise<boolean> {
+		return !!(await PlayerState.exists({ userId, location: { $exists: true } }));
+	}
+
+	/**
+	 * Claims one of the player's `cap` mining gems for a UTC day. Returns its number (1..cap), or null when the cap is reached.
+	 * Atomic: the counter only moves while it is below the cap, so concurrent claims never pass it.
+	 */
+	async claimOreGem(userId: string, day: string, cap: number): Promise<number | null> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				const p = await PlayerState.findOneAndUpdate(
+					{ userId, $or: [{ gemDay: { $ne: day } }, { gemsToday: { $lt: cap } }] },
+					[{ $set: { gemsToday: { $cond: [{ $eq: ["$gemDay", day] }, { $add: ["$gemsToday", 1] }, 1] }, gemDay: day } }],
+					{ upsert: true, new: true },
+				).lean();
+				return p?.gemsToday ?? null;
+			} catch (e) {
+				// The cap is reached (the upsert hit the existing row), or a first claim raced another; one retry tells which
+				if ((e as { code?: number }).code !== 11000) throw e;
+			}
+		}
+		return null;
+	}
+
 	async saveTiles(inst: TInstance, keys: string[]): Promise<void> {
 		if (keys.length === 0) return;
 		const landId = landIdOf(inst);

@@ -30,6 +30,9 @@ const PlayerStateSchema = new mongoose.Schema({
 	energy: Number,
 	lastEnergyAt: Number,
 	equipped: String,
+	/** UTC day of the mining gem counter, and gems found that day (daily cap) */
+	gemDay: String,
+	gemsToday: Number,
 	location: {
 		instanceKind: { type: String, enum: ["land", "world"], required: true },
 		landId: String,

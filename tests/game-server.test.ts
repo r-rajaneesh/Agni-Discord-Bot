@@ -1,14 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setDefaultTimeout, spyOn, test } from "bun:test";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
-import { CHUNK, LAND_SPAWN, cachedChunkCount, chunkOf } from "../game/chunks";
-import { MAX_ENERGY, TICK_MS, TREE_REGROW_MS, WALK_SPEED, enter, use, type TDir, type TInstance } from "../game/engine";
+import { CHUNK, LAND_PORTAL, LAND_SPAWN, cachedChunkCount, chunkOf } from "../game/chunks";
+import { DAY_MS, HOUSE_DOOR, MAX_ENERGY, ROCK_REGROW_MS, TICK_MS, TREE_REGROW_MS, WALK_SPEED, enter, use, type TDir, type TInstance } from "../game/engine";
 import * as entities from "../game/entities";
 import { T } from "../game/map";
 import type { TServerMsg } from "../game/protocol";
-import { TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from "../game/world";
+import { LAND_GATE, SHOP_DOORS, TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from "../game/world";
 import EconomyManager from "../managers/EconomyManager";
-import GameServer, { LOBBY_CAP } from "../managers/GameServer";
+import GameServer, { LOBBY_CAP, type TGameServerDeps } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
 import { Earning, Inventory, LedgerEntry, MarketItem, Order, Wallet } from "../managers/models/Economy";
 import { Land, LandTile, PlayerState } from "../managers/models/Game";
@@ -50,7 +50,7 @@ const auth = {
 
 let clock = 1_000_000;
 let servers: GameServer[] = [];
-function server(st: InstanceStore = store) {
+function server(st: InstanceStore = store, extra: Partial<TGameServerDeps> = {}) {
 	const gs = new GameServer({
 		store: st,
 		auth,
@@ -60,6 +60,7 @@ function server(st: InstanceStore = store) {
 		log: quiet,
 		now: () => clock,
 		autoTick: false,
+		...extra,
 	});
 	servers.push(gs);
 	return gs;
@@ -204,7 +205,7 @@ describe("sessions", () => {
 		const gs = server();
 		const ws = await join(gs, "u1");
 		// Messages for later tasks get a toast and are not counted as invalid
-		for (let i = 0; i < 25; i++) await gs.message(ws as any, raw({ t: "sleep" }));
+		for (let i = 0; i < 25; i++) await gs.message(ws as any, raw({ t: "emote", id: "wave" }));
 		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Not available yet.", ok: false });
 		for (let i = 0; i < 19; i++) await gs.message(ws as any, i % 2 ? "not json" : raw({ t: "buy", item: "wood", qty: -5 }));
 		expect(ws.close).not.toHaveBeenCalled();
@@ -647,5 +648,472 @@ describe("animals", () => {
 		expect(gs.animals(landId)).toEqual([]);
 		expect(entsOf(l)).toEqual([]);
 		expect((await gs.hitAnimal("l", ra.id)).ok).toBe(false);
+	});
+});
+
+describe("actions", () => {
+	afterEach(() => mock.restore());
+
+	// Land epochs are real time, so day-based rules need the test clock just after now
+	beforeEach(() => {
+		clock = Date.now() + 60_000;
+	});
+
+	const toasts = (ws: TSock) => sent(ws).filter((m) => m.t === "toast") as Extract<TServerMsg, { t: "toast" }>[];
+	const instOf = (gs: GameServer, ws: TSock) => gs.instance(welcome(ws).instance.id)!;
+	// Moves the player in place (same chunk as where it joined) to face a tile
+	const put = (gs: GameServer, ws: TSock, userId: string, x: number, y: number, facing: TDir) => {
+		const p = instOf(gs, ws).players.get(userId)!;
+		p.x = x;
+		p.y = y;
+		p.facing = facing;
+		return p;
+	};
+	const act = (gs: GameServer, ws: TSock, m: unknown) => gs.message(ws as any, raw(m));
+	// Home of the first rabbit: wild animals spawn around it
+	const WILD = (() => {
+		for (let cy = -WORLD_CHUNKS / 2; cy < WORLD_CHUNKS / 2; cy++)
+			for (let cx = -WORLD_CHUNKS / 2; cx < WORLD_CHUNKS / 2; cx++) {
+				const r = entities.spawnAnimals(cx, cy).find((an) => an.kind === "rabbit");
+				if (r) return { x: r.homeX, y: r.homeY };
+			}
+		throw new Error("no rabbit");
+	})();
+	let useSeq = 0;
+	const useMsg = () => ({ t: "use", seq: ++useSeq });
+
+	test("till, plant, water, harvest on own land", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const inst = instOf(gs, ws);
+		// Spawn faces down onto cleared grass
+		const key = `${LAND_SPAWN.x},${LAND_SPAWN.y + 1}`;
+		const landId = welcome(ws).instance.id.slice("land:".length);
+
+		await act(gs, ws, useMsg());
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "You till the soil.", ok: true });
+		expect(inst.tiles.get(key)?.tilled).toBe(true);
+		expect(last(ws, "tiles")!.tiles).toEqual([[key, { tilled: true, wateredDays: [] }]]);
+		expect(await LandTile.findOne({ landId, x: LAND_SPAWN.x, y: LAND_SPAWN.y + 1 }).lean()).toMatchObject({ tilled: true });
+		expect(last(ws, "wallet")!.energy).toBe(MAX_ENERGY - 2);
+
+		await act(gs, ws, { t: "equip", item: "parsnip_seed" });
+		await act(gs, ws, useMsg());
+		expect(inst.tiles.get(key)?.cropId).toBe("parsnip");
+		expect(await eco.inventory("u1")).toMatchObject({ parsnip_seed: 14 });
+		expect(last(ws, "wallet")!.inventory.parsnip_seed).toBe(14);
+		expect((await LandTile.findOne({ landId, x: LAND_SPAWN.x, y: LAND_SPAWN.y + 1 }).lean())?.cropId).toBe("parsnip");
+
+		// Parsnips grow in 2 watered days
+		await act(gs, ws, { t: "equip", item: "watering_can" });
+		for (let d = 0; d < 2; d++) {
+			await act(gs, ws, useMsg());
+			expect(last(ws, "toast")!.msg).toBe("💧 Watered.");
+			clock += DAY_MS;
+		}
+		await act(gs, ws, useMsg());
+		expect(last(ws, "toast")!.msg).toContain("Harvested 1 Parsnip");
+		expect(await eco.inventory("u1")).toMatchObject({ parsnip: 1, parsnip_seed: 14 });
+		expect(inst.tiles.get(key)).toEqual({ tilled: true, wateredDays: [] });
+		expect(last(ws, "wallet")!.inventory.parsnip).toBe(1);
+	});
+
+	test("planting fails cleanly without seeds", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		await act(gs, ws, useMsg());
+		await act(gs, ws, { t: "equip", item: "parsnip_seed" });
+		// The seeds are gone after equipping, as if sold elsewhere
+		await eco.transact([{ userId: "u1", items: { parsnip_seed: -15 } }], { reason: "test" });
+		await act(gs, ws, useMsg());
+		expect(last(ws, "toast")!.ok).toBe(false);
+		expect(instOf(gs, ws).tiles.get(`${LAND_SPAWN.x},${LAND_SPAWN.y + 1}`)?.cropId).toBeUndefined();
+	});
+
+	test("equip only tools and owned items, and observers see it", async () => {
+		await seedWorld("a", 0.5, -0.5);
+		await seedWorld("b", 2.5, -0.5);
+		const gs = server();
+		const a = await join(gs, "a");
+		const b = await join(gs, "b");
+		await act(gs, a, { t: "equip", item: "axe" });
+		expect(instOf(gs, a).players.get("a")!.equipped).toBe("axe");
+		expect(playersAbout(b, "a").at(-1)).toMatchObject({ p: { equipped: "axe" } });
+		await act(gs, a, { t: "equip", item: "gold" });
+		expect(last(a, "toast")).toEqual({ t: "toast", msg: "You don't have any Gold Ore.", ok: false });
+		await act(gs, a, { t: "equip", item: "nope" });
+		expect(last(a, "toast")).toEqual({ t: "toast", msg: "Unknown item.", ok: false });
+		expect(instOf(gs, a).players.get("a")!.equipped).toBe("axe");
+	});
+
+	test("use is rate limited to 6/s", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const n = toasts(ws).length;
+		for (let i = 0; i < 9; i++) await act(gs, ws, useMsg());
+		const got = toasts(ws).slice(n);
+		expect(got.filter((t) => t.msg === "Slow down.")).toHaveLength(1);
+		expect(got.filter((t) => t.msg !== "Slow down.")).toHaveLength(6);
+		// The window slides: a second later actions run again
+		clock += 1000;
+		await act(gs, ws, { t: "sleep" });
+		expect(last(ws, "toast")!.msg).toBe("Face your house door to sleep.");
+	});
+
+	test("sleep restores energy at your house door after 18:00", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const p = put(gs, ws, "u1", HOUSE_DOOR.x + 0.5, HOUSE_DOOR.y + 1.5, "u");
+		p.energy = 3;
+		p.lastEnergyAt = clock;
+		await act(gs, ws, { t: "sleep" });
+		expect(last(ws, "toast")!.ok).toBe(false);
+		clock = instOf(gs, ws).epoch + 12 * 60_000;
+		await act(gs, ws, { t: "sleep" });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "💤 You feel rested. Energy restored!", ok: true });
+		expect(p.energy).toBe(MAX_ENERGY);
+		expect(last(ws, "wallet")!.energy).toBe(MAX_ENERGY);
+	});
+
+	test("travel moves player between land and world", async () => {
+		// Below the Land Gate, facing it
+		const gx = LAND_GATE.x + 0.5;
+		const gy = LAND_GATE.y + 1.5;
+		await seedWorld("a", gx, gy, undefined, "u");
+		await seedWorld("b", gx + 1, gy);
+		const gs = server();
+		const a = await join(gs, "a");
+		const b = await join(gs, "b");
+		expect(welcome(a).you).toMatchObject({ x: gx, y: gy });
+
+		await act(gs, a, { t: "travel", to: "land" });
+		expect(welcome(a).instance).toMatchObject({ kind: "land", ownerId: "a" });
+		expect(welcome(a).you).toMatchObject({ x: LAND_SPAWN.x + 0.5, y: LAND_SPAWN.y + 0.5 });
+		expect(leftAbout(b, "a")).toHaveLength(1);
+		expect(gs.instance("lobby:1")!.players.has("a")).toBe(false);
+
+		// Back through the portal stone, by using it: to the same lobby and spot
+		put(gs, a, "a", LAND_PORTAL.x + 1.5, LAND_PORTAL.y + 0.5, "l");
+		await act(gs, a, useMsg());
+		expect(welcome(a).instance.id).toBe("lobby:1");
+		expect(welcome(a).you).toMatchObject({ x: gx, y: gy, facing: "u" });
+		expect(playersAbout(b, "a").length).toBeGreaterThan(0);
+
+		// A player with no world position arrives at TOWN_SPAWN
+		const c = await join(gs, "c");
+		put(gs, c, "c", HOUSE_DOOR.x + 0.5, HOUSE_DOOR.y + 1.5, "u");
+		await act(gs, c, { t: "travel", to: "world" });
+		expect(welcome(c).instance.kind).toBe("world");
+		expect(welcome(c).you).toMatchObject({ x: TOWN_SPAWN.x + 0.5, y: TOWN_SPAWN.y + 0.5 });
+	});
+
+	test("travel only from a portal tile or the house door", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const id = welcome(ws).instance.id;
+		await act(gs, ws, { t: "travel", to: "world" });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Use the portal stone or your house door to travel.", ok: false });
+		// Facing the portal, but asking for the wrong place
+		put(gs, ws, "u1", LAND_PORTAL.x + 1.5, LAND_PORTAL.y + 0.5, "l");
+		await act(gs, ws, { t: "travel", to: "land" });
+		expect(last(ws, "toast")!.ok).toBe(false);
+		expect(welcome(ws).instance.id).toBe(id);
+
+		await seedWorld("w", 0.5, -0.5);
+		const w = await join(gs, "w");
+		await act(gs, w, { t: "travel", to: "land" });
+		expect(last(w, "toast")).toEqual({ t: "toast", msg: "Use the Land Gate to go to your land.", ok: false });
+		expect(welcome(w).instance.kind).toBe("world");
+	});
+
+	test("buy only while facing a shop door", async () => {
+		await seedWorld("a", 0.5, -0.5);
+		const gs = server();
+		const ws = await join(gs, "a");
+		await eco.transact([{ userId: "a", coins: 500, items: { parsnip_seed: 15 } }], { reason: "test" });
+		await act(gs, ws, { t: "buy", item: "wheat_seed", qty: 2 });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Visit the General Store to buy.", ok: false });
+		await act(gs, ws, { t: "sell", item: "parsnip_seed", qty: 1 });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Visit the General Store to sell.", ok: false });
+		expect((await eco.wallet("a")).coins).toBe(500);
+
+		const door = SHOP_DOORS[0]!;
+		put(gs, ws, "a", door.x + 0.5, door.y + 1.5, "u");
+		await act(gs, ws, { t: "buy", item: "wheat_seed", qty: 2 });
+		expect(last(ws, "toast")!.ok).toBe(true);
+		const coins = (await eco.wallet("a")).coins;
+		expect(coins).toBeLessThan(500);
+		expect(await eco.inventory("a")).toMatchObject({ wheat_seed: 2 });
+		expect(last(ws, "wallet")).toMatchObject({ coins, inventory: { wheat_seed: 2 } });
+
+		await act(gs, ws, { t: "sell", item: "parsnip_seed", qty: "all" });
+		expect(last(ws, "toast")!.ok).toBe(true);
+		expect((await eco.inventory("a")).parsnip_seed).toBeUndefined();
+		expect((await eco.wallet("a")).coins).toBeGreaterThan(coins);
+		await act(gs, ws, { t: "sell", item: "parsnip_seed", qty: "all" });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "You have no Parsnip Seeds.", ok: false });
+		await act(gs, ws, { t: "buy", item: "hoe", qty: 1 });
+		expect(last(ws, "toast")!.ok).toBe(false);
+	});
+
+	test("unlock sends chunks to everyone on the land and wallet to the owner", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		await act(gs, ws, { t: "unlock", cx: 3, cy: 0 });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "That chunk is not next to your land.", ok: false });
+		await act(gs, ws, { t: "unlock", cx: 2, cy: 0 });
+		expect(last(ws, "chunks")!.unlocked).toHaveLength(10);
+		expect(last(ws, "chunks")!.unlocked).toContain("2,0");
+		expect(last(ws, "wallet")!.coins).toBe(0);
+		expect((await Land.findOne({ ownerId: "u1" }).lean())!.unlocked).toContain("2,0");
+		// Not enough coins for the next one
+		await act(gs, ws, { t: "unlock", cx: 2, cy: 1 });
+		expect(last(ws, "toast")!.ok).toBe(false);
+		expect(last(ws, "chunks")!.unlocked).toHaveLength(10);
+
+		// Lobbies have nothing to unlock
+		await seedWorld("w", 0.5, -0.5);
+		const w = await join(gs, "w");
+		await act(gs, w, { t: "unlock", cx: 2, cy: 0 });
+		expect(last(w, "toast")).toEqual({ t: "toast", msg: "Only the owner can expand this land.", ok: false });
+	});
+
+	test("buyProduct DMs a Razorpay link and toasts Check your DMs", async () => {
+		const dms: [string, string][] = [];
+		const links: string[] = [];
+		const gs = server(store, {
+			payments: {
+				hasPass: async () => false,
+				razorpayEnabled: true,
+				createRazorpayLink: async (_userId, product) => (links.push(product.id), "https://rzp.io/l/abc"),
+			},
+			dm: async (userId, content) => void dms.push([userId, content]),
+		});
+		const ws = await join(gs, "u1");
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		expect(links).toEqual(["farm_pass"]);
+		expect(dms).toHaveLength(1);
+		expect(dms[0]![0]).toBe("u1");
+		expect(dms[0]![1]).toContain("https://rzp.io/l/abc");
+		expect(dms[0]![1]).toContain("Your item appears in game as soon as payment completes.");
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Check your DMs to pay.", ok: true });
+
+		// Gems are never sold, and unknown products are refused
+		for (const productId of ["gems_100", "nope"]) {
+			await act(gs, ws, { t: "buyProduct", productId });
+			expect(last(ws, "toast")).toEqual({ t: "toast", msg: "That isn't for sale.", ok: false });
+		}
+		expect(dms).toHaveLength(1);
+	});
+
+	test("buyProduct sends one link per product per 30 s", async () => {
+		const dms: string[] = [];
+		const gs = server(store, {
+			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async () => "https://rzp.io/l/abc" },
+			dm: async (_u, content) => void dms.push(content),
+		});
+		const ws = await join(gs, "u1");
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		clock += 29_999;
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Check your DMs — a link was sent recently.", ok: false });
+		expect(dms).toHaveLength(1);
+		clock += 1;
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		expect(dms).toHaveLength(2);
+	});
+
+	test("buyProduct with Razorpay off toasts and DMs nothing", async () => {
+		const dms: string[] = [];
+		const gs = server(store, { dm: async (_u, content) => void dms.push(content) });
+		const ws = await join(gs, "u1");
+		await act(gs, ws, { t: "buyProduct", productId: "farm_pass" });
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Purchases are not available right now.", ok: false });
+		expect(dms).toEqual([]);
+	});
+
+	test("pushWallet sends wallet to an online player and is a no-op offline", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const n = sent(ws).filter((m) => m.t === "wallet").length;
+		await eco.transact([{ userId: "u1", gems: 7 }], { reason: "test" });
+		await gs.pushWallet("u1");
+		expect(sent(ws).filter((m) => m.t === "wallet")).toHaveLength(n + 1);
+		expect(last(ws, "wallet")!.gems).toBe(12);
+		gs.close(ws as any);
+		await gs.pushWallet("u1");
+		await gs.pushWallet("nobody");
+		expect(sent(ws).filter((m) => m.t === "wallet")).toHaveLength(n + 1);
+	});
+
+	test("lobby regrowth through use: harvesting in #1 leaves #2 alone", async () => {
+		// Standing below the field at (-3, -56), facing it
+		member.b = ["G"];
+		await seedWorld("a", -2.5, -54.5, undefined, "u");
+		await seedWorld("b", -2.5, -54.5, undefined, "u");
+		const gs = server();
+		const a = await join(gs, "a");
+		const b = await join(gs, "b", "G");
+		expect(welcome(a).instance.id).toBe("lobby:1");
+		expect(welcome(b).instance.id).toBe("lobby:2");
+
+		await act(gs, a, useMsg());
+		expect(last(a, "toast")!.msg).toContain("Harvested");
+		expect(last(a, "tiles")!.tiles.map(([k]) => k)).toEqual(["-3,-56"]);
+		await act(gs, a, useMsg());
+		expect(last(a, "toast")).toEqual({ t: "toast", msg: "This is still growing.", ok: false });
+		expect(last(b, "tiles")).toBeUndefined();
+
+		await act(gs, b, useMsg());
+		expect(last(b, "toast")!.msg).toContain("Harvested");
+		const got = (await eco.inventory("a"));
+		expect(await eco.inventory("b")).toEqual(got);
+		// Lobby tiles are not saved
+		expect(await LandTile.countDocuments({})).toBe(0);
+	});
+
+	test("use hits an animal in front and charges energy once", async () => {
+		await seedWorld("a", WILD.x, WILD.y);
+		const gs = server();
+		const a = await join(gs, "a");
+		clock += TICK_MS;
+		gs.tick();
+		spyOn(entities, "tickAnimal").mockImplementation(() => {});
+		const p = gs.instance("lobby:1")!.players.get("a")!;
+		const r = gs.animals("lobby:1").find((an) => an.state !== "dead")!;
+		expect(r).toBeDefined();
+		r.hp = 1;
+		r.x = p.x;
+		r.y = p.y + 0.8;
+		const energy = p.energy;
+		await act(gs, a, useMsg());
+		expect(r.state).toBe("dead");
+		expect(p.energy).toBe(energy - 2);
+		expect(await eco.inventory("a")).toMatchObject(entities.ANIMAL_DROPS[r.kind]);
+		expect(last(a, "toast")!.msg).toContain("🍖");
+		expect(last(a, "wallet")!.energy).toBe(energy - 2);
+	});
+
+	test("a failed drop credit leaves the animal alive and charges nothing", async () => {
+		await seedWorld("a", WILD.x, WILD.y);
+		const gs = server();
+		const a = await join(gs, "a");
+		clock += TICK_MS;
+		gs.tick();
+		spyOn(entities, "tickAnimal").mockImplementation(() => {});
+		const p = gs.instance("lobby:1")!.players.get("a")!;
+		const r = gs.animals("lobby:1").find((an) => an.state !== "dead")!;
+		r.hp = 1;
+		r.x = p.x;
+		r.y = p.y + 0.8;
+		const before = { hp: r.hp, state: r.state, until: r.until };
+		const energy = p.energy;
+		spyOn(eco, "transact").mockImplementation(async () => {
+			throw new Error("db down");
+		});
+		await act(gs, a, useMsg());
+		expect({ hp: r.hp, state: r.state, until: r.until }).toEqual(before);
+		expect(p.energy).toBe(energy);
+		expect(last(a, "toast")).toEqual({ t: "toast", msg: "Couldn't collect the drops.", ok: false });
+	});
+});
+
+describe("gems and energy", () => {
+	const toastsOf = (ws: TSock) => sent(ws).filter((m) => m.t === "toast") as Extract<TServerMsg, { t: "toast" }>[];
+	test("5 gems once per UTC day on the first hello", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		expect(last(ws, "toast")).toEqual({ t: "toast", msg: "Daily reward: +5 💎", ok: true });
+		expect(last(ws, "wallet")!.gems).toBe(5);
+		const day = new Date(clock).toISOString().slice(0, 10);
+		expect(await LedgerEntry.countDocuments({ idempotencyKey: `daily-gems:u1:${day}` })).toBe(1);
+
+		const ws2 = await join(gs, "u1");
+		expect(last(ws2, "toast")).toBeUndefined();
+		expect((await eco.wallet("u1")).gems).toBe(5);
+
+		clock += 86_400_000;
+		const ws3 = await join(gs, "u1");
+		expect(last(ws3, "toast")!.msg).toBe("Daily reward: +5 💎");
+		expect((await eco.wallet("u1")).gems).toBe(10);
+	});
+
+	// A world rock with walkable ground to its left
+	const ROCK = (() => {
+		for (let y = -60; y < 60; y++) for (let x = -60; x < 60; x++) if (worldTerrain(x, y) === T.rock && worldTerrain(x - 1, y) === T.grass) return { x, y };
+		throw new Error("no rock");
+	})();
+	// Mines ROCK n times, waiting for it to regrow in between
+	async function mine(gs: GameServer, ws: TSock, n: number) {
+		for (let i = 0; i < n; i++) {
+			await gs.message(ws as any, raw({ t: "use", seq: ++mineSeq }));
+			clock += ROCK_REGROW_MS;
+		}
+	}
+	let mineSeq = 0;
+	async function miner(rand: () => number) {
+		await seedWorld("a", ROCK.x - 0.5, ROCK.y + 0.5, undefined, "r");
+		const gs = server(store, { rand });
+		const ws = await join(gs, "a");
+		expect(welcome(ws).you).toMatchObject({ x: ROCK.x - 0.5, y: ROCK.y + 0.5 });
+		await gs.message(ws as any, raw({ t: "equip", item: "pickaxe" }));
+		return { gs, ws };
+	}
+
+	test("mining gem drops are capped at 5 per day", async () => {
+		const { gs, ws } = await miner(() => 0);
+		expect((await eco.wallet("a")).gems).toBe(5); // the daily reward
+		await mine(gs, ws, 10);
+		expect((await eco.wallet("a")).gems).toBe(10);
+		expect(last(ws, "wallet")!.gems).toBe(10);
+		expect(toastsOf(ws).filter((t) => t.msg.includes("You found a gem"))).toHaveLength(5);
+	});
+
+	test("cap resets next UTC day", async () => {
+		const { gs, ws } = await miner(() => 0);
+		await mine(gs, ws, 6);
+		expect((await eco.wallet("a")).gems).toBe(10);
+		clock += 86_400_000;
+		await mine(gs, ws, 6);
+		expect((await eco.wallet("a")).gems).toBe(15);
+	});
+
+	test("re-mining a regrown lobby rock does not repeat a gem", async () => {
+		const rolls = [0];
+		const { gs, ws } = await miner(() => rolls.shift() ?? 0.5);
+		await mine(gs, ws, 4);
+		expect((await eco.wallet("a")).gems).toBe(6);
+		expect(await eco.inventory("a")).not.toEqual({});
+	});
+
+	test("the daily cap holds under concurrent claims", async () => {
+		const day = "2026-11-17";
+		const got = await Promise.all(Array.from({ length: 12 }, () => store.claimOreGem("z", day, 5)));
+		expect(got.filter((k) => k !== null).sort()).toEqual([1, 2, 3, 4, 5]);
+		expect(await store.claimOreGem("z", "2026-11-18", 5)).toBe(1);
+	});
+
+	test("refillEnergy fills a live session, or the saved state offline", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const p = gs.instance(welcome(ws).instance.id)!.players.get("u1")!;
+		p.energy = 4;
+		p.lastEnergyAt = clock;
+		await gs.refillEnergy("u1");
+		expect(p.energy).toBe(MAX_ENERGY);
+		expect(last(ws, "wallet")!.energy).toBe(MAX_ENERGY);
+
+		p.energy = 4;
+		gs.close(ws as any);
+		await gs.refillEnergy("u1");
+		const saved = await PlayerState.findOne({ userId: "u1" }).lean();
+		expect(saved!.energy).toBe(MAX_ENERGY);
+		const ws2 = await join(gs, "u1");
+		expect(last(ws2, "wallet")!.energy).toBe(MAX_ENERGY);
+
+		// No saved state: nothing to refill, so the shop refuses before charging
+		expect(await gs.hasPlayed("ghost")).toBe(false);
+		expect(await gs.refillEnergy("ghost")).toBe(false);
+		expect(await gs.hasPlayed("u1")).toBe(true);
 	});
 });

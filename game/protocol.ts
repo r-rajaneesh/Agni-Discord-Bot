@@ -16,7 +16,7 @@ export type TClientMsg =
 	| { t: "buy"; item: string; qty: number }
 	| { t: "sell"; item: string; qty: number | "all" }
 	| { t: "unlock"; cx: number; cy: number }
-	| { t: "buyGems"; productId: string }
+	| { t: "buyProduct"; productId: string }
 	| { t: "lobbies" }
 	| { t: "switchLobby"; lobby: number }
 	| { t: "emote"; id: string }
@@ -132,9 +132,9 @@ export function parseClientMessage(raw: string | Uint8Array): TClientMsg | null 
 			const cy = int(m.cy, -10_000, 10_000);
 			return cx === null || cy === null ? null : { t: "unlock", cx, cy };
 		}
-		case "buyGems": {
+		case "buyProduct": {
 			const productId = str(m.productId);
-			return productId ? { t: "buyGems", productId } : null;
+			return productId ? { t: "buyProduct", productId } : null;
 		}
 		case "lobbies":
 			return { t: "lobbies" };

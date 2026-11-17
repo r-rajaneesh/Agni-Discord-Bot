@@ -81,6 +81,8 @@ export interface TActionResult {
 	take?: Record<string, number>;
 	/** Items the action produces; the caller credits them after apply() */
 	give?: Record<string, number>;
+	/** A rock was mined; the server rolls the rare gem drop */
+	mined?: boolean;
 	energyCost?: number;
 	menu?: "shop";
 	/** The player stepped into a portal; the caller moves them to this instance kind */
@@ -407,6 +409,7 @@ export function use(
 			ok: true,
 			msg: `⚒️ +${qty} ${ITEMS[ore]?.name}`,
 			give: { [ore]: qty },
+			mined: true,
 			changedTiles: [key],
 			apply: clear(ROCK_REGROW_MS),
 		});

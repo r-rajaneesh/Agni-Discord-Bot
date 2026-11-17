@@ -316,6 +316,16 @@ describe("resources on your land", () => {
 		expect(terrainAt(inst, t.x, t.y, T0 + 3 * DAY_MS)).toBe(T.tree);
 	});
 
+	test("only mining a rock is marked mined (the server rolls gems)", () => {
+		const { inst, p } = land();
+		p.equipped = "pickaxe";
+		standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.rock, -15, -15, 47, 47);
+		expect(use(inst, "u1", T0, {})).toMatchObject({ ok: true, mined: true });
+		p.equipped = "axe";
+		standLeftOf(inst, p, (x, y) => terrainAt(inst, x, y, T0) === T.tree, -15, -15, 47, 47);
+		expect(use(inst, "u1", T0, {}).mined).toBeUndefined();
+	});
+
 	test("mined rocks give ore and respawn after 2 days", () => {
 		const { inst, p } = land();
 		p.equipped = "pickaxe";

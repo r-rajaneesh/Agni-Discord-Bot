@@ -1,19 +1,8 @@
 import type { ServerWebSocket } from "bun";
 import { chunkOf, dropLand } from "../game/chunks";
 import { ITEMS, STARTER_COINS, STARTER_KIT } from "../game/data/items";
-import {
-	HIT_RADIUS,
-	MAX_ENERGY,
-	TICK_MS,
-	currentEnergy,
-	enter,
-	facedPoint,
-	simulate,
-	type TDir,
-	type TInstance,
-	type TPlayerState,
-} from "../game/engine";
-import { hitAnimal, type TAnimal } from "../game/entities";
+import { MAX_ENERGY, TICK_MS, currentEnergy, enter, simulate, type TDir, type TInstance, type TPlayerState } from "../game/engine";
+import type { TAnimal } from "../game/entities";
 import {
 	PROTOCOL_VERSION,
 	parseClientMessage,
@@ -28,11 +17,13 @@ import type EconomyManager from "./EconomyManager";
 import { landIdOf, type TLocation, type TStoredPlayer } from "./InstanceStore";
 import type InstanceStore from "./InstanceStore";
 import type PaymentManager from "./PaymentManager";
+import { action, dailyGems, isAction, strike, type TActionCtx } from "./game/actions";
 import Wildlife from "./game/animals";
 import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
 import Lobbies, { LOBBY_CAP } from "./game/lobbies";
 
 export { AOI_CHUNKS } from "./game/aoi";
+export { MAX_ACTIONS_PER_SEC } from "./game/actions";
 export { LOBBY_CAP };
 /** An input older than this stops the player */
 export const INPUT_STALE_MS = 250;
@@ -45,12 +36,12 @@ const PRICE_ITEMS = Object.values(ITEMS)
 	.filter((i) => i.tradeable)
 	.map((i) => i.id);
 
-type TSocket = Pick<ServerWebSocket<TSocketData>, "data" | "send" | "close">;
+export type TSocket = Pick<ServerWebSocket<TSocketData>, "data" | "send" | "close">;
 type TLog = { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void };
-type TPrices = TSnapshot["prices"];
+export type TPrices = TSnapshot["prices"];
 
 /** One loaded instance */
-interface TRuntime {
+export interface TRuntime {
 	inst: TInstance;
 	sessions: Set<TSession>;
 	/** Mutation queue: one async change at a time per instance */
@@ -63,7 +54,7 @@ interface TRuntime {
 	wild: Wildlife | null;
 }
 
-interface TSession {
+export interface TSession {
 	ws: TSocket;
 	userId: string;
 	rt: TRuntime;
@@ -76,10 +67,14 @@ interface TSession {
 	visible: Set<TSession>;
 	/** Guild of the launch, when the user is a member; picks the home lobby */
 	home: { id: string; name: string } | null;
-	/** Last position in the open world, used when arriving from private land */
-	lastWorld: { x: number; y: number; facing: TDir } | null;
+	/** Last position and lobby in the open world, used when arriving from private land */
+	lastWorld: { x: number; y: number; facing: TDir; lobby?: number } | null;
 	/** The last `ents` list sent, as JSON, so an unchanged list is not sent again */
 	ents: string;
+	/** Times of the actions in the last second (rate limit) */
+	actions: number[];
+	/** When "Slow down." was last sent */
+	slowedAt: number;
 }
 
 interface TConn {
@@ -97,6 +92,8 @@ export interface TGameServerDeps {
 	dm: (userId: string, content: string) => Promise<void>;
 	log: TLog;
 	now?: () => number;
+	/** Random rolls (the ore gem); tests make them deterministic */
+	rand?: () => number;
 	/** False in tests, which call tick() themselves */
 	autoTick?: boolean;
 }
@@ -124,6 +121,7 @@ export default class GameServer {
 	private userLocks = new Map<string, Promise<unknown>>();
 	/** Player saves run in order, so an older position never overwrites a newer one */
 	private saves: Promise<void> = Promise.resolve();
+	private ctx: TActionCtx;
 
 	constructor(deps: TGameServerDeps) {
 		this.deps = deps;
@@ -131,6 +129,28 @@ export default class GameServer {
 		this.worldEpoch = this.now();
 		this.lastFlush = this.now();
 		this.lobbies = new Lobbies((inst) => this.runtime(inst), this.worldEpoch);
+		this.ctx = {
+			deps,
+			now: this.now,
+			rand: deps.rand ?? Math.random,
+			linkSentAt: new Map(),
+			send: (ws, msg) => this.send(ws, msg),
+			toast: (s, msg, ok) => this.toast(s, msg, ok),
+			run: (rt, fn) => this.run(rt, fn),
+			here: (s, rt) => this.sessions.get(s.userId) === s && s.rt === rt,
+			tilesChanged: (inst, keys) => this.tilesChanged(inst, keys),
+			pushWallet: (userId) => this.pushWallet(userId),
+			view: (s) => this.view(s),
+			prices: () => this.prices(),
+			land: (ownerId) => this.land(ownerId),
+			worldFor: (s) => {
+				const n = s.lastWorld?.lobby;
+				const kept = n === undefined ? undefined : this.lobbies.get(n);
+				return kept && kept.inst.players.size < LOBBY_CAP ? kept : this.lobbies.pick(s.home);
+			},
+			leave: (s) => this.leave(s),
+			place: (s, rt, base, at, prices) => this.place(s, rt, base, at, prices),
+		};
 		if (deps.autoTick !== false) this.timer = setInterval(() => this.tick(), TICK_MS);
 	}
 
@@ -190,7 +210,8 @@ export default class GameServer {
 			case "switchLobby":
 				return this.switchLobby(s, m.lobby);
 			default:
-				// Actions arrive in a later task
+				if (isAction(m)) return action(this.ctx, s, m);
+				// Chat, emotes and cosmetics arrive in later tasks
 				return this.toast(s, "Not available yet.", false);
 		}
 	}
@@ -282,7 +303,8 @@ export default class GameServer {
 			premium,
 		};
 		let lastWorld = src?.lastWorld ?? null;
-		if (stored?.location.instanceKind === "world") lastWorld = { x: stored.x, y: stored.y, facing: stored.facing };
+		if (stored?.location.instanceKind === "world")
+			lastWorld = { x: stored.x, y: stored.y, facing: stored.facing, ...(stored.location.lobby === undefined ? {} : { lobby: stored.location.lobby }) };
 		// Only a position on the same kind of instance is reused
 		const at = prev && (src ? src.rt.inst.kind : kind) === kind ? { x: prev.x, y: prev.y, facing: prev.facing } : undefined;
 		// Leaves first, so the old session's slot doesn't count against its lobby
@@ -305,12 +327,15 @@ export default class GameServer {
 			home,
 			lastWorld,
 			ents: "[]",
+			actions: [],
+			slowedAt: -Infinity,
 		};
 		conn.ws.data.userId = userId;
 		conn.state = "ready";
 		conn.session = s;
 		this.sessions.set(userId, s);
 		this.place(s, dest, base, at, prices);
+		await dailyGems(this.ctx, s);
 		await this.pushWallet(userId);
 	}
 
@@ -428,7 +453,7 @@ export default class GameServer {
 	/** Takes a session's player out of its instance */
 	private leave(s: TSession) {
 		const { rt, player: p } = s;
-		if (rt.inst.kind === "world") s.lastWorld = { x: p.x, y: p.y, facing: p.facing };
+		if (rt.inst.lobby) s.lastWorld = { x: p.x, y: p.y, facing: p.facing, lobby: rt.inst.lobby.n };
 		rt.inst.players.delete(s.userId);
 		rt.sessions.delete(s);
 		for (const o of s.visible) {
@@ -540,32 +565,14 @@ export default class GameServer {
 	}
 
 	/**
-	 * Hits an animal in front of the player and credits the drops when it dies.
+	 * Hits an animal in front of the player and credits the drops when it dies (tests; players hit through `use`).
 	 * Energy is charged by the engine's use(), which finds the animal.
 	 */
 	async hitAnimal(userId: string, animalId: number): Promise<{ ok: boolean; msg: string; drops?: Record<string, number> }> {
 		const s = this.sessions.get(userId);
 		if (!s?.rt.wild) return { ok: false, msg: "There's nothing to hit here." };
 		const rt = s.rt;
-		const wild = rt.wild!;
-		const r = await this.run(rt, async () => {
-			if (this.sessions.get(userId) !== s || s.rt !== rt) return { ok: false, msg: "You are not here." };
-			const a = wild.find(animalId);
-			const f = facedPoint(s.player);
-			if (!a || a.state === "dead" || Math.hypot(a.x - f.x, a.y - f.y) > HIT_RADIUS) return { ok: false, msg: "Nothing to hit here." };
-			const hit = hitAnimal(a, this.now());
-			if (!hit.killed || !hit.drops) return { ok: true, msg: `You hit the ${a.kind}.` };
-			const drops = hit.drops;
-			const t = await this.deps.eco
-				.transact([{ userId, items: drops }], { reason: "slaughter", ref: a.kind })
-				.catch((e: unknown) => ({ ok: false as const, message: String(e) }));
-			if (!t.ok) {
-				this.deps.log.error(`[GAME] slaughter credit failed for ${userId}: ${t.message}`);
-				return { ok: false, msg: "Couldn't collect the drops." };
-			}
-			const got = Object.entries(drops).map(([id, n]) => `${n} ${ITEMS[id]?.name ?? id}`).join(", ");
-			return { ok: true, msg: `🍖 +${got}`, drops };
-		});
+		const r = await this.run(rt, () => (this.ctx.here(s, rt) ? strike(this.ctx, s, rt, animalId) : { ok: false, msg: "You are not here.", drops: undefined }));
 		if (r.drops) await this.pushWallet(userId);
 		return r;
 	}
@@ -628,6 +635,28 @@ export default class GameServer {
 		} catch (e) {
 			this.deps.log.error("[GAME] pushWallet failed", e);
 		}
+	}
+
+	/** True when the player is online or has a saved state, so energy can be refilled */
+	async hasPlayed(userId: string): Promise<boolean> {
+		return this.sessions.has(userId) || (await this.deps.store.hasPlayer(userId));
+	}
+
+	/** Fills the player's energy: the live session's, else the saved state (the shop's refill). False when there is neither. */
+	refillEnergy(userId: string): Promise<boolean> {
+		return this.forUser(userId, async () => {
+			const s = this.sessions.get(userId);
+			if (s) {
+				s.player.energy = MAX_ENERGY;
+				s.player.lastEnergyAt = this.now();
+				s.dirty = true;
+				await this.pushWallet(userId);
+				return true;
+			}
+			// After the save of a session that just closed, so that save can't undo the refill
+			await this.saves;
+			return this.deps.store.setEnergy(userId, MAX_ENERGY, this.now());
+		});
 	}
 
 	/** Saves every player and closes every socket */

@@ -114,7 +114,7 @@ describe("emote wheel", () => {
 		flexGems!.click();
 		const [bdGems, bdPack] = buttons("Breakdance");
 		expect(bdGems!.disabled).toBe(true);
-		expect(bdPack!.textContent).toBe("Get pack");
+		expect(bdPack!.textContent).toBe("Get pack ₹149");
 		bdPack!.click();
 		expect(sent).toEqual([
 			{ t: "buyCosmetic", itemId: "flex", via: "gems" },

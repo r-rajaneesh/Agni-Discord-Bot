@@ -17,11 +17,12 @@ let replset: MongoMemoryReplSet;
 const dms: string[] = [];
 const pushed: string[] = [];
 const owned: string[] = [];
+const warns: unknown[][] = [];
 const noop = () => {};
 const client: any = {
 	economy: new EconomyManager(),
 	config,
-	log: { info: noop, debug: noop, warn: noop, error: noop },
+	log: { info: noop, debug: noop, warn: (...a: unknown[]) => void warns.push(a), error: noop },
 	makeEmbed: (e: any) => e,
 	users: { fetch: async (id: string) => ({ send: async () => dms.push(id) }) },
 	gameServer: { pushWallet: async (id: string) => void pushed.push(id), pushOwned: async (id: string) => void owned.push(id) },
@@ -147,6 +148,54 @@ describe("emotes", () => {
 		expect(pushed.filter((u) => u === "e1")).toHaveLength(1);
 		expect(owned.filter((u) => u === "e1")).toHaveLength(1);
 		expect(dms.filter((d) => d === "e1")).toHaveLength(1);
+	});
+
+	const pay = async (userId: string, paymentId: string) => {
+		const p = await Purchase.create({ userId, productId: "emotes_party_pack", provider: "razorpay" });
+		const body = paidEvent(String(p._id), paymentId, 14900);
+		expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		return p;
+	};
+	const refund = async (paymentId: string) => {
+		const body = JSON.stringify({ event: "refund.processed", payload: { refund: { entity: { id: `rfnd_${paymentId}`, payment_id: paymentId } } } });
+		expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+	};
+
+	test("a pack paid twice and refunded once keeps its items", async () => {
+		await pay("e4", "pay_e4a");
+		// The second payment adds no rows: the first holds every item
+		await pay("e4", "pay_e4b");
+		await refund("pay_e4a");
+		expect(await items("e4")).toEqual([...PACK].sort());
+		const keys = (await Ownership.find({ userId: "e4" }).lean()).map((o) => o.sourceKey).sort();
+		expect(keys).toEqual(PACK.map((id) => `razorpay:pay_e4b:${id}`).sort());
+		// Refunding the second one too takes everything
+		await refund("pay_e4b");
+		expect(await items("e4")).toEqual([]);
+	});
+
+	test("a pack paid while every item is owned is recorded, receipted and flagged for refund", async () => {
+		for (const itemId of PACK) await Ownership.create({ userId: "e5", itemId, source: "gems" });
+		const n = warns.length;
+		const p = await pay("e5", "pay_e5");
+		// A replay sends nothing more
+		const body = paidEvent(String(p._id), "pay_e5", 14900);
+		expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		expect(await Purchase.findById(p._id)).toMatchObject({ status: "paid", paymentId: "pay_e5" });
+		expect(dms.filter((d) => d === "e5")).toHaveLength(1);
+		expect(warns.slice(n)).toHaveLength(1);
+		expect(JSON.stringify(warns.at(-1))).toContain("pay_e5");
+		// Nothing changed hands
+		expect(await Ownership.countDocuments({ userId: "e5", source: "gems" })).toBe(5);
+	});
+
+	test("refund then rebuy works", async () => {
+		await pay("e6", "pay_e6a");
+		await refund("pay_e6a");
+		expect(await items("e6")).toEqual([]);
+		await pay("e6", "pay_e6b");
+		expect(await items("e6")).toEqual([...PACK].sort());
+		expect(dms.filter((d) => d === "e6")).toHaveLength(2);
 	});
 
 	test("cosmetic refund removes only that purchase's rows", async () => {

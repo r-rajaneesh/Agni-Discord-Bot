@@ -61,14 +61,14 @@ export class EmotePanel extends Panel {
 		const pack = packWith(e.id);
 		if (pack) {
 			const get = button(
-				"Get pack",
+				`Get pack ${formatINR(pack.priceINR)}`,
 				() => {
 					this.send({ t: "buyCosmetic", itemId: e.id, via: "razorpay" });
 					this.note.textContent = "Check your Discord DMs to pay";
 				},
 				"btn btn-small",
 			);
-			get.title = `${pack.name}, ${formatINR(pack.priceINR)}`;
+			get.title = pack.name;
 			cell.append(get);
 		}
 		return cell;

@@ -239,8 +239,20 @@ export default class GameServer {
 				return emote(this.ctx, s, m.id);
 			case "buyCosmetic":
 				return buyCosmetic(this.ctx, s, m.itemId, m.via);
-			default:
+			case "use":
+			case "equip":
+			case "sleep":
+			case "travel":
+			case "buy":
+			case "sell":
+			case "unlock":
+			case "buyProduct":
 				return action(this.ctx, s, m);
+			default: {
+				// Every message type is handled above; a new one fails to compile here
+				const unhandled: never = m;
+				return unhandled;
+			}
 		}
 	}
 
@@ -683,13 +695,17 @@ export default class GameServer {
 		}
 	}
 
-	/** Reloads what an online player owns and sends it (after a purchase or refund) */
-	async pushOwned(userId: string): Promise<void> {
+	/**
+	 * Sends an online player what they own after a purchase or refund. The stored items are merged in, never replacing the set,
+	 * so a gem buy finishing meanwhile isn't lost; a refund names what it took in `removed`.
+	 */
+	async pushOwned(userId: string, removed: string[] = []): Promise<void> {
 		try {
 			const items = await ownedItems(userId);
 			const s = this.sessions.get(userId);
 			if (!s) return;
-			s.owned = new Set(items);
+			for (const id of removed) if (!items.includes(id)) s.owned.delete(id);
+			for (const id of items) s.owned.add(id);
 			this.send(s.ws, ownedMsg(s));
 		} catch (e) {
 			this.deps.log.error("[GAME] pushOwned failed", e);

@@ -359,6 +359,7 @@ export async function buyProduct(ctx: TActionCtx, s: TSession, productId: string
 	const product = productById(productId);
 	// Every product is an item (a pass or cosmetics); gems are earned in game and never sold
 	if (!product) return ctx.toast(s, "That isn't for sale.", false);
+	if (product.kind === "cosmetic" && (product.items ?? []).every((id) => s.owned.has(id))) return ctx.toast(s, "You already own everything in this pack.", false);
 	const { payments, dm, log } = ctx.deps;
 	if (!payments.razorpayEnabled) return ctx.toast(s, "Purchases are not available right now.", false);
 	const key = `${s.userId}:${product.id}`;

@@ -3,7 +3,7 @@ import { EMOTES, FREE_EMOTES, canUseEmote } from "../../game/data/emotes";
 import { packWith } from "../../game/data/products";
 import type { TServerMsg } from "../../game/protocol";
 import type { TSession } from "../GameServer";
-import { own } from "../models/Cosmetics";
+import { Ownership, own } from "../models/Cosmetics";
 import { buyProduct, limited, transact, type TActionCtx } from "./actions";
 
 /** One emote per player per this long */
@@ -22,9 +22,10 @@ export function emote(ctx: TActionCtx, s: TSession, id: string): void {
 		}
 		return;
 	}
+	// Refused emotes count too, so their toasts are throttled like real ones
+	s.emoteAt = now;
 	if (!EMOTES[id]) return ctx.toast(s, "Unknown emote.", false);
 	if (!canUseEmote(id, s.owned)) return ctx.toast(s, "Unlock this emote first.", false);
-	s.emoteAt = now;
 	const msg: TServerMsg = { t: "emote", userId: s.userId, id };
 	ctx.send(s.ws, msg);
 	for (const o of s.visible) ctx.send(o.ws, msg);
@@ -45,16 +46,21 @@ export async function buyCosmetic(ctx: TActionCtx, s: TSession, itemId: string, 
 	// Keyed by player and item, so parallel buys debit once; a buy already paid for is a no-op debit
 	const t = await transact(ctx, [{ userId, gems: -(e.gems ?? 0) }], { reason: "cosmetic", ref: itemId, idempotencyKey: `cosmetic:${userId}:${itemId}` });
 	if (!t.ok) return ctx.toast(s, t.message, false);
+	let added: boolean;
 	try {
-		await own(userId, itemId, "gems");
+		added = await own(userId, itemId, "gems");
+		// Freshly paid in gems, but a pack grant wrote the row first: it becomes the gems row, so refunding the pack keeps it
+		if (!added && !t.duplicate) {
+			await Ownership.updateOne({ userId, itemId }, { $set: { source: "gems" }, $unset: { sourceKey: 1 } });
+			added = true;
+		}
 	} catch (err) {
 		// Paid: a retry finds the debit done and only records the item
 		ctx.deps.log.error(`[GAME] recording ${itemId} for ${userId} failed`, err);
 		return ctx.toast(s, "Something went wrong. Try again.", false);
 	}
-	const fresh = !s.owned.has(itemId);
 	s.owned.add(itemId);
 	ctx.send(s.ws, ownedMsg(s));
-	if (fresh && !t.duplicate) ctx.toast(s, `${e.icon} Unlocked ${e.name}!`, true);
+	if (added) ctx.toast(s, `${e.icon} Unlocked ${e.name}!`, true);
 	await ctx.pushWallet(userId);
 }

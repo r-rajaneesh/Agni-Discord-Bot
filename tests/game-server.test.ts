@@ -11,6 +11,8 @@ import { LAND_GATE, SHOP_DOORS, TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from ".
 import EconomyManager from "../managers/EconomyManager";
 import GameServer, { LOBBY_CAP, type TGameServerDeps } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
+import PaymentManager from "../managers/PaymentManager";
+import { productById } from "../game/data/products";
 import { Earning, Inventory, LedgerEntry, MarketItem, Order, Wallet } from "../managers/models/Economy";
 import { Ownership } from "../managers/models/Cosmetics";
 import { ChatLog, Land, LandTile, PlayerState } from "../managers/models/Game";
@@ -1453,6 +1455,52 @@ describe("emotes", () => {
 		clock += 30_000;
 		await act(gs, a, { t: "buyProduct", productId: "emotes_party_pack" });
 		expect(links).toEqual(["emotes_party_pack", "emotes_party_pack"]);
+	});
+
+	test("refused emotes count toward the emote limiter", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await act(gs, a, { t: "emote", id: "breakdance" });
+		await act(gs, a, { t: "emote", id: "wave" });
+		expect(toasts(a).at(-1)!.msg).toBe("Slow down.");
+		expect(emotes(b)).toEqual([]);
+		clock += 2000;
+		await act(gs, a, { t: "emote", id: "wave" });
+		expect(emotes(b)).toHaveLength(1);
+	});
+
+	test("buyProduct refuses a pack whose every emote is owned", async () => {
+		const links: string[] = [];
+		for (const itemId of productById("emotes_party_pack")!.items!) await Ownership.create({ userId: "a", itemId, source: "gems" });
+		const gs = server(store, {
+			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+		});
+		const [a] = await trio(gs);
+		await act(gs, a, { t: "buyProduct", productId: "emotes_party_pack" });
+		expect(toasts(a).at(-1)).toEqual({ t: "toast", msg: "You already own everything in this pack.", ok: false });
+		await act(gs, a, { t: "buyCosmetic", itemId: "spin", via: "razorpay" });
+		expect(toasts(a).at(-1)!.msg).toBe("You already own this.");
+		expect(links).toEqual([]);
+	});
+
+	test("a gem buy racing a pack grant keeps the gems-paid emote after the pack refund", async () => {
+		const gs = server();
+		const [a] = await trio(gs);
+		await eco.transact([{ userId: "a", gems: 200 }], { reason: "test" });
+		const before = await gems("a");
+		const pack = productById("emotes_party_pack")!;
+		const noop = () => {};
+		const pm = new PaymentManager({ gameServer: gs, log: { info: noop, warn: noop, error: noop } } as any);
+		// The pack lands after the wheel showed moonwalk locked, and before the gem buy reaches the database
+		await pm.grant("a", pack, "razorpay:pay_race");
+		await act(gs, a, { t: "buyCosmetic", itemId: "moonwalk", via: "gems" });
+		expect(await gems("a")).toBe(before - 150);
+		expect(toasts(a).at(-1)!.msg).toBe("🌙 Unlocked Moonwalk!");
+		expect(await Ownership.findOne({ userId: "a", itemId: "moonwalk" }).lean()).toMatchObject({ source: "gems" });
+		await pm.revoke("a", pack, "razorpay:pay_race");
+		expect((await Ownership.find({ userId: "a" }).lean()).map((o) => o.itemId)).toEqual(["moonwalk"]);
+		// The live session drops the refunded emotes and keeps the paid one
+		expect(last(a, "owned")!.items).toEqual([...FREE_EMOTES, "moonwalk"]);
 	});
 
 	test("pushOwned sends a live session what it owns now", async () => {

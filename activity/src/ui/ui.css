@@ -666,6 +666,7 @@
 }
 .ui .btn-small {
 	width: 100%;
+	white-space: normal;
 	min-height: 26px;
 	padding: 2px 4px;
 	font-size: 11px;

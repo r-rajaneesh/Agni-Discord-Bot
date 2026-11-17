@@ -1,6 +1,6 @@
 // Ground tiles (seamless: decoration stays clear of the edges, or repeats with a period that divides the tile)
 // and the objects that stand on them: trees, rocks, fences, the portal and buildings
-import { OL, OW, Pic, S, blob, circle, darken, ellipse, group, lighten, line, path, rect, rng, shadow } from "./lib";
+import { OL, OW, Pic, S, blob, circle, darken, ellipse, group, lighten, line, path, rect, rng, shadow, tag } from "./lib";
 
 export const GRASS = { base: "#7cb84f", light: "#97cc63", dark: "#5f9a3c" };
 export const SOIL = { base: "#8d5b3b", ridge: "#9f6a45", furrow: "#6b4229", top: "#b9845a" };
@@ -104,24 +104,70 @@ export function watered(): Pic {
 	return p;
 }
 
-// The town shop: plaster between timber, a terracotta roof and a double door
+// The town shop front: a plaster facade two tiles high with timber posts only at its outer ends, a striped
+// awning and a signboard spanning the front, windows on alternate tiles and a stone footing
 const PLASTER = "#f1e2c4";
-function wallBase(p: Pic): void {
+export type TEnd = "l" | "m" | "r";
+function plaster(p: Pic, e: TEnd): void {
 	p.add(rect(0, 0, S, S, PLASTER));
 	const r = rng(5);
-	for (let i = 0; i < 8; i++) p.add(ellipse(16 + r() * 96, 14 + r() * 90, 4, 2, "#e2cfa8", { op: 0.8 }));
-	p.add(rect(0, 0, 7, S, WOOD.dark), rect(S - 7, 0, 7, S, WOOD.dark), rect(0, 0, S, 7, WOOD.dark), rect(0, S - 12, S, 12, WOOD.dark));
-	p.add(rect(0, S - 12, S, 3, WOOD.base));
+	for (let i = 0; i < 6; i++) p.add(ellipse(16 + r() * 96, 20 + r() * 80, 4, 2, "#e2cfa8", { op: 0.8 }));
+	if (e === "l") p.add(rect(0, 0, 12, S, p.shade(WOOD.dark, 0.15)), line("M12 0V128", OL, 3), line("M2 0V128", OL, 4));
+	if (e === "r") p.add(rect(S - 12, 0, 12, S, p.shade(WOOD.dark, 0.15)), line("M116 0V128", OL, 3), line("M126 0V128", OL, 4));
 }
 
-export function wall(): Pic {
+function shopWindow(p: Pic, y: number): void {
+	p.add(rect(30, y, 68, 50, "#fdf3dc", { ol: true, r: 4 }), rect(36, y + 6, 56, 38, p.radial([[0, "#cdeefa"], [1, "#7fbfdc"]], 0.3, 0.3, 0.9)));
+	p.add(line(`M64 ${y + 6}v38M36 ${y + 25}h56`, "#fdf3dc", 4), path(`M40 ${y + 10}l12 0l-12 12z`, "#ffffff", { op: 0.7 }));
+}
+
+/** The awning along the top of the upper row: 16 px stripes, so it runs on across tiles */
+function awning(p: Pic): void {
+	p.add(rect(0, 0, S, 10, darken("#d65a3e", 0.3)));
+	for (let i = 0; i < 8; i++) p.add(path(`M${i * 16} 6h16v18q-8 7 -16 0z`, i % 2 ? "#fdf3dc" : "#d65a3e"), line(`M${i * 16} 24q8 7 16 0`, OL, 2.5));
+	p.add(line("M0 6H128", OL, 3), rect(0, 30, S, 6, "#1d140c", { op: 0.12 }));
+}
+
+/** Upper row: awning, then a window on alternate tiles (`win`) or plain plaster */
+export function shopUpper(e: TEnd, win: boolean): Pic {
 	const p = new Pic();
-	wallBase(p);
-	// A shop window with a striped awning
-	p.add(rect(30, 30, 68, 50, "#fdf3dc", { ol: true, r: 4 }), rect(36, 36, 56, 38, p.radial([[0, "#cdeefa"], [1, "#7fbfdc"]], 0.3, 0.3, 0.9)));
-	p.add(line("M64 36v38M36 55h56", "#fdf3dc", 4));
-	for (let i = 0; i < 4; i++) p.add(path(`M${26 + i * 19} 22h19v12q-9.5 7 -19 0z`, i % 2 ? "#fdf3dc" : "#d65a3e"));
-	p.add(line("M26 22h76", OL, 3));
+	plaster(p, e);
+	awning(p);
+	if (win) shopWindow(p, 46);
+	// The beam between the floors runs the whole front
+	p.add(rect(0, S - 10, S, 10, p.shade(WOOD.dark, 0.15)), line("M0 118H128", OL, 3));
+	return p;
+}
+
+/** The signboard over the doors, in two halves: a wheat sheaf on the left, a coin on the right */
+export function shopSign(half: "l" | "r"): Pic {
+	const p = shopUpper("m", false);
+	const x0 = half === "l" ? 14 : 0;
+	const x1 = half === "l" ? 128 : 114;
+	p.add(rect(x0, 44, x1 - x0, 56, p.shade("#a8713f", 0.2)), line(`M${x0} 44H${x1}M${x0} 100H${x1}`, OL, 4), rect(x0, 48, x1 - x0, 4, "#d4a46e", { op: 0.7 }));
+	if (half === "l") {
+		p.add(line("M14 44V100", OL, 4));
+		for (const a of [-20, 0, 20]) p.add(group(line("M0 0V-30", "#f2c14e", 6) + ellipse(0, -30, 5, 9, "#f2c14e", { ol: true, extra: { "stroke-width": 2.5 } }), `translate(84 92) rotate(${a})`));
+		p.add(rect(76, 78, 16, 7, "#c0392b", { ol: true, r: 2 }));
+	} else {
+		p.add(line("M114 44V100", OL, 4));
+		p.add(circle(44, 72, 18, p.shade("#f2c14e", 0.25), { ol: true }), circle(44, 72, 11, "none", { extra: { stroke: "#c99a2e", "stroke-width": 3 } }), line("M44 64v16", "#c99a2e", 3));
+	}
+	for (const x of half === "l" ? [40] : [88]) p.add(line(`M${x} 36V44`, OL, 3));
+	return p;
+}
+
+function footing(p: Pic): void {
+	p.add(rect(0, 100, S, 28, "#a39c90"), line("M0 100H128", OL, 3));
+	for (let i = 0; i < 4; i++) p.add(rect(i * 32 + 3, 105, 26, 9, "#bab3a7", { r: 3 }), rect(i * 32 + 19, 117, 26, 9, "#bab3a7", { r: 3 }));
+}
+
+/** Lower row: a window on alternate tiles, on the footing */
+export function shopLower(e: TEnd, win: boolean): Pic {
+	const p = new Pic();
+	plaster(p, e);
+	if (win) shopWindow(p, 30);
+	footing(p);
 	return p;
 }
 
@@ -161,8 +207,10 @@ function door(p: Pic, x: number, w: number, top: number): void {
 
 export function shopDoor(): Pic {
 	const p = new Pic();
-	wallBase(p);
-	door(p, 28, 72, 20);
+	plaster(p, "m");
+	footing(p);
+	door(p, 28, 72, 16);
+	p.add(rect(22, 118, 84, 10, "#bab3a7", { ol: true, r: 2 }));
 	return p;
 }
 
@@ -264,7 +312,6 @@ export function fence(dir: "h" | "v"): Pic {
 // The player's house: a dusty-blue roof row, a sided wall with windows, a stone footing and the door
 const HROOF = "#5b7fa6";
 const SIDING = "#e6b77f";
-type TEnd = "l" | "m" | "r";
 const ends = (p: Pic, e: TEnd, colour: string) => {
 	if (e === "l") p.add(rect(0, 0, 10, S, colour), line("M10 0V128", OL, 3), line("M2 0V128", OL, 4));
 	if (e === "r") p.add(rect(S - 10, 0, 10, S, colour), line("M118 0V128", OL, 3), line("M126 0V128", OL, 4));
@@ -297,11 +344,6 @@ export function houseWall(e: TEnd): Pic {
 	return p;
 }
 
-function footing(p: Pic): void {
-	p.add(rect(0, 100, S, 28, "#a39c90"), line("M0 100H128", OL, 3));
-	for (let i = 0; i < 4; i++) p.add(rect(i * 32 + 3, 105, 26, 9, "#bab3a7", { r: 3 }), rect(i * 32 + 19, 117, 26, 9, "#bab3a7", { r: 3 }));
-}
-
 export function houseBase(e: TEnd): Pic {
 	const p = new Pic();
 	siding(p);
@@ -316,6 +358,26 @@ export function houseDoor(): Pic {
 	footing(p);
 	door(p, 36, 56, 18);
 	p.add(rect(30, 118, 68, 10, "#bab3a7", { ol: true, r: 2 }));
+	return p;
+}
+
+/**
+ * A river or pond bank drawn over a water tile, on the sides (bits N=1, E=2, S=4, W=8) that border land.
+ * Two land sides that meet get a rounded corner.
+ */
+export function shore(mask: number): Pic {
+	const p = new Pic();
+	const land = (bit: number) => (mask & bit) !== 0;
+	const t = land(1) ? 18 : -30;
+	const r = land(2) ? S - 18 : S + 30;
+	const b = land(4) ? S - 18 : S + 30;
+	const l = land(8) ? 18 : -30;
+	const rad = (a: number, c: number) => (land(a) && land(c) ? 24 : 0);
+	const [tl, tr, br, bl] = [rad(8, 1), rad(1, 2), rad(2, 4), rad(4, 8)];
+	const inner = (o: number) =>
+		`M${l + tl + o} ${t + o}H${r - tr - o}${tr ? `A${tr} ${tr} 0 0 1 ${r - o} ${t + tr + o}` : ""}V${b - br - o}${br ? `A${br} ${br} 0 0 1 ${r - br - o} ${b - o}` : ""}H${l + bl + o}${bl ? `A${bl} ${bl} 0 0 1 ${l + o} ${b - bl - o}` : ""}V${t + tl + o}${tl ? `A${tl} ${tl} 0 0 1 ${l + tl + o} ${t + o}` : ""}z`;
+	p.add(tag("path", { d: `M0 0H128V128H0z${inner(0)}`, fill: GRASS.base, "fill-rule": "evenodd" }));
+	p.add(line(inner(4), "#1d140c", 6, 0.12), line(inner(0), PATH.light, 7), line(inner(0), darken(PATH.dark, 0.2), 2.5, 0.7), line(inner(9), "#e8f7ff", 2.5, 0.55));
 	return p;
 }
 

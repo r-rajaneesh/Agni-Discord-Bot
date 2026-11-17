@@ -8,6 +8,7 @@ import { Resvg } from "@resvg/resvg-js";
 
 const ART = join(import.meta.dir, "..", "art");
 const OUT = join(import.meta.dir, "..", "activity", "public", "assets");
+const ITEM_RECTS = join(import.meta.dir, "..", "activity", "src", "assets", "items.frames.json");
 export const ATLASES = ["tiles", "characters", "animals", "items", "ui"] as const;
 // Each frame's edge pixels are repeated this far outwards, so linear filtering and mipmaps never sample a neighbour
 const EXTRUDE = 4;
@@ -103,6 +104,11 @@ function pack(atlas: string, images: TImage[]): void {
 	writeFileSync(join(OUT, `${atlas}.png`), file);
 	const meta = { app: "scripts/build-atlas.ts", image: `${atlas}.png`, format: "RGBA8888", size: { w, h }, scale: "1" };
 	writeFileSync(join(OUT, `${atlas}.json`), `${JSON.stringify({ frames, meta }, null, "\t")}\n`);
+	// The DOM shows item icons as CSS backgrounds, so it needs the frame rects as a module it can import
+	if (atlas === "items") {
+		const rects = Object.fromEntries(Object.entries(frames).map(([k, v]) => [k, (v as { frame: unknown }).frame]));
+		writeFileSync(ITEM_RECTS, `${JSON.stringify({ size: { w, h }, frames: rects }, null, "\t")}\n`);
+	}
 	console.log(`${atlas}: ${images.length} frames, ${w}×${h}, ${(file.length / 1024).toFixed(0)} KB`);
 }
 

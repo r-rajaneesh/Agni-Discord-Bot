@@ -85,8 +85,14 @@ export class Pic {
 		return `url(#${id})`;
 	}
 
-	svg(mirror = false): string {
-		const body = mirror ? tag("g", { transform: `translate(${this.w} 0) scale(-1 1)` }, this.parts.join("")) : this.parts.join("");
+	/** The SVG text. `fit` scales the drawing by k about the origin then moves it by (x, y), keeping outline widths. */
+	svg(mirror = false, fit?: { k: number; x: number; y: number }): string {
+		let body = this.parts.join("");
+		if (fit) {
+			body = body.replace(/stroke-width="([\d.]+)"/g, (_m, v: string) => `stroke-width="${+v / fit.k}"`);
+			body = tag("g", { transform: `translate(${fit.x} ${fit.y}) scale(${fit.k})` }, body);
+		}
+		if (mirror) body = tag("g", { transform: `translate(${this.w} 0) scale(-1 1)` }, body);
 		return `<svg xmlns="http://www.w3.org/2000/svg" width="${this.w}" height="${this.h}" viewBox="0 0 ${this.w} ${this.h}">${tag("defs", {}, this.defs.join(""))}${body}</svg>\n`;
 	}
 }

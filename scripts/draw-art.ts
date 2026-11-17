@@ -27,7 +27,6 @@ Object.assign(tiles, {
 	farmland: t.farmland().svg(),
 	tilled: t.tilled().svg(),
 	watered: t.watered().svg(),
-	wall: t.wall().svg(),
 	roof: t.roof().svg(),
 	roof_ridge: t.roofRidge().svg(),
 	door: t.shopDoor().svg(),
@@ -39,10 +38,17 @@ Object.assign(tiles, {
 	dim: t.dim().svg(),
 });
 for (const e of ["l", "m", "r"] as const) {
+	tiles[`shop_upper_${e}`] = t.shopUpper(e, false).svg();
+	tiles[`shop_lower_${e}`] = t.shopLower(e, false).svg();
 	tiles[`house_roof_${e}`] = t.houseRoof(e).svg();
 	tiles[`house_wall_${e}`] = t.houseWall(e).svg();
 	tiles[`house_base_${e}`] = t.houseBase(e).svg();
 }
+tiles.shop_upper_win = t.shopUpper("m", true).svg();
+tiles.shop_lower_win = t.shopLower("m", true).svg();
+tiles.shop_sign_l = t.shopSign("l").svg();
+tiles.shop_sign_r = t.shopSign("r").svg();
+for (let m = 1; m < 16; m++) tiles[`shore_${m}`] = t.shore(m).svg();
 for (const crop of Object.values(CROPS)) {
 	tiles[`field_${crop.id}`] = field(crop.id).svg();
 	for (let s = 0; s <= crop.growDays; s++) tiles[`crop_${crop.id}_${s}`] = cropStage(crop.id, s).svg();

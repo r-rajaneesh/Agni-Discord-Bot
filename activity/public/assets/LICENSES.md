@@ -4,7 +4,7 @@ Every frame in these atlases (`tiles`, `characters`, `animals`, `items`, `ui`) i
 
 | Atlas | Frames | Source |
 |---|---|---|
-| tiles | grass, path, water shimmer, farmland, tilled and watered soil, shop wall, roof, roof ridge and door, bridge, flowers, trees, rocks, portal, fences, house roof, wall, footing and door, locked-land veil, public fields, crop growth stages | original (Agni), `scripts/art/terrain.ts`, `scripts/art/crops.ts` |
+| tiles | grass, path, water shimmer and banks, farmland, tilled and watered soil, shop front (upper and lower walls, windows, signboard, door), roof and roof ridge, bridge, flowers, trees, rocks, portal, fences, house roof, wall, footing and door, locked-land veil, public fields, crop growth stages | original (Agni), `scripts/art/terrain.ts`, `scripts/art/crops.ts` |
 | characters | farmer body (tintable shirt) and detail layers, 4 facings × 3 walk frames | original (Agni), `scripts/art/characters.ts` |
 | animals | rabbit, deer, duck, boar, 4 facings × 3 walk frames | original (Agni), `scripts/art/animals.ts` |
 | items | every item in `game/data/items.ts` | original (Agni), `scripts/art/items.ts` |

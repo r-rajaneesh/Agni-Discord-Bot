@@ -240,8 +240,9 @@ describe("sessions", () => {
 		const moved = last(ws, "you")!;
 		expect(moved.x).toBeGreaterThan(LAND_SPAWN.x + 0.5);
 		await gs.shutdown();
-		expect(last(ws, "kicked")).toEqual({ t: "kicked", reason: "server restarting" });
-		expect(ws.close).toHaveBeenCalled();
+		// A restart is not a kick: 1012 tells the client to reconnect
+		expect(last(ws, "kicked")).toBeUndefined();
+		expect(ws.close).toHaveBeenCalledWith(1012, "server restarting");
 
 		const gs2 = server();
 		const ws2 = await join(gs2, "u1");
@@ -285,6 +286,27 @@ describe("sessions", () => {
 		const ws3 = await join(gs, "u1");
 		expect(last(ws3, "welcome")).toBeDefined();
 		expect(last(ws, "kicked")).toBeUndefined();
+	});
+
+	test("shutdown waits for queued instance changes before the final save", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const { id } = welcome(ws).instance;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		let done = false;
+		const rt = (gs as any).instances.get(id);
+		void (gs as any).run(rt, async () => {
+			await gate;
+			done = true;
+		});
+		let stopped = false;
+		const stopping = gs.shutdown().then(() => (stopped = true));
+		await Bun.sleep(20);
+		expect(stopped).toBe(false);
+		release();
+		await stopping;
+		expect(done).toBe(true);
 	});
 
 	test("shutdown unloads every land", async () => {

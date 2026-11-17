@@ -35,6 +35,8 @@ const FLUSH_MS = 5000;
 const LAND_UNLOAD_MS = 5 * 60_000;
 const LOBBY_CLOSE_MS = 60_000;
 const MAX_INVALID = 20;
+/** How long shutdown waits for queued instance changes */
+const SHUTDOWN_DRAIN_MS = 5000;
 const PALETTE = ["#e74c3c", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#f1c40f", "#e84393", "#2ecc71"];
 const PRICE_ITEMS = Object.values(ITEMS)
 	.filter((i) => i.tradeable)
@@ -741,16 +743,26 @@ export default class GameServer {
 		if (s) s.globalMutedUntil = until;
 	}
 
-	/** Saves every player and closes every socket */
+	/**
+	 * Closes every socket, lets queued instance changes finish (up to SHUTDOWN_DRAIN_MS), then saves every player.
+	 * Sockets close with 1012 and no `kicked`, so clients reconnect to the restarted server.
+	 */
 	async shutdown(): Promise<void> {
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
-		this.save([...this.sessions.values()].map((s) => this.stored(s)));
-		this.sessions.clear();
 		for (const conn of [...this.conns.values()]) {
 			conn.session = undefined;
-			this.drop(conn, 1012, "server restarting", "server restarting");
+			this.drop(conn, 1012, "server restarting");
 		}
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const drained = await Promise.race([
+			Promise.all([...this.instances.values()].map((rt) => rt.queue)).then(() => true),
+			new Promise<false>((r) => (timeout = setTimeout(() => r(false), SHUTDOWN_DRAIN_MS))),
+		]);
+		clearTimeout(timeout);
+		if (!drained) this.deps.log.warn("[GAME] shutdown: instance queues still busy, saving anyway");
+		this.save([...this.sessions.values()].map((s) => this.stored(s)));
+		this.sessions.clear();
 		for (const { inst } of this.instances.values()) if (inst.kind === "land") dropLand(inst.seed);
 		this.instances.clear();
 		this.lands.clear();

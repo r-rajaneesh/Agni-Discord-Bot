@@ -122,4 +122,38 @@ describe("migrate-activity", () => {
 		await expect(migrate(stub, { backupDir: dir, yes: true }, quiet)).rejects.toThrow("does not match");
 		for (const name of OLD_COLLECTIONS) expect(await real.collection(name).countDocuments()).toBeGreaterThan(0);
 	});
+
+	test("a corrupted backup line aborts before any drop", async () => {
+		await seed();
+		const dir = tmp();
+		const real = db();
+		// Damages game_tiles.json on disk after it was written, when the check re-counts the collection
+		const calls: Record<string, number> = {};
+		const stub = new Proxy(real, {
+			get(t, k) {
+				if (k !== "collection") return (t as any)[k].bind(t);
+				return (name: string) => {
+					const c = t.collection(name);
+					return new Proxy(c, {
+						get(ct, ck) {
+							if (ck === "countDocuments")
+								return async () => {
+									if ((calls[name] = (calls[name] ?? 0) + 1) > 1 && name === "game_tiles") {
+										const file = path.join(dir, "game_tiles.json");
+										const lines = fs.readFileSync(file, "utf8").split("\n");
+										lines[2] = lines[2]!.slice(0, 10);
+										fs.writeFileSync(file, lines.join("\n"));
+									}
+									return ct.countDocuments();
+								};
+							const v = (ct as any)[ck];
+							return typeof v === "function" ? v.bind(ct) : v;
+						},
+					});
+				};
+			},
+		}) as typeof real;
+		await expect(migrate(stub, { backupDir: dir, yes: true }, quiet)).rejects.toThrow("game_tiles");
+		for (const name of OLD_COLLECTIONS) expect(await real.collection(name).countDocuments()).toBeGreaterThan(0);
+	});
 });

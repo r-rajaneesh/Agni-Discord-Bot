@@ -11,6 +11,7 @@ import { LAND_GATE, SHOP_DOORS, TOWN_SPAWN, WORLD_CHUNKS, worldTerrain } from ".
 import EconomyManager from "../managers/EconomyManager";
 import GameServer, { LOBBY_CAP, type TGameServerDeps } from "../managers/GameServer";
 import InstanceStore from "../managers/InstanceStore";
+import LinkCooldown from "../managers/LinkCooldown";
 import PaymentManager from "../managers/PaymentManager";
 import { productById } from "../game/data/products";
 import { Earning, Inventory, LedgerEntry, MarketItem, Order, Wallet } from "../managers/models/Economy";
@@ -59,7 +60,7 @@ function server(st: InstanceStore = store, extra: Partial<TGameServerDeps> = {})
 		store: st,
 		auth,
 		eco,
-		payments: { hasPass: async () => false, createRazorpayLink: async () => "", razorpayEnabled: false },
+		payments: { hasPass: async () => false, createRazorpayLink: async () => "", razorpayEnabled: false, links: new LinkCooldown() },
 		dm: async () => {},
 		log: quiet,
 		now: () => clock,
@@ -91,15 +92,15 @@ function last<K extends TServerMsg["t"]>(ws: TSock, t: K) {
 const welcome = (ws: TSock) => last(ws, "welcome")!.snapshot;
 const raw = (m: unknown) => JSON.stringify(m);
 
-async function join(gs: GameServer, userId: string, guildId: string | null = null) {
+async function join(gs: GameServer, userId: string, guildId: string | null = null, instanceId = "i-1") {
 	const ws = sock();
 	gs.open(ws as any);
-	await gs.message(ws as any, raw({ t: "hello", v: 1, token: `tok:${userId}`, instanceId: "i-1", guildId }));
+	await gs.message(ws as any, raw({ t: "hello", v: 1, token: `tok:${userId}`, instanceId, guildId }));
 	return ws;
 }
 
 // Saved location in the open world, so hello places the player in a lobby (the saved one when given and open)
-async function seedWorld(userId: string, x: number, y: number, lobby?: number, facing: TDir = "d") {
+async function seedWorld(userId: string, x: number, y: number, lobby?: number, facing: TDir = "d", instanceId?: string) {
 	await store.savePlayers([
 		{
 			userId,
@@ -111,7 +112,7 @@ async function seedWorld(userId: string, x: number, y: number, lobby?: number, f
 			x,
 			y,
 			facing,
-			location: { instanceKind: "world", ...(lobby === undefined ? {} : { lobby }), x, y, facing },
+			location: { instanceKind: "world", ...(lobby === undefined ? {} : { lobby }), ...(instanceId === undefined ? {} : { instanceId }), x, y, facing },
 		},
 	]);
 }
@@ -240,8 +241,9 @@ describe("sessions", () => {
 		const moved = last(ws, "you")!;
 		expect(moved.x).toBeGreaterThan(LAND_SPAWN.x + 0.5);
 		await gs.shutdown();
-		expect(last(ws, "kicked")).toEqual({ t: "kicked", reason: "server restarting" });
-		expect(ws.close).toHaveBeenCalled();
+		// A restart is not a kick: 1012 tells the client to reconnect
+		expect(last(ws, "kicked")).toBeUndefined();
+		expect(ws.close).toHaveBeenCalledWith(1012, "server restarting");
 
 		const gs2 = server();
 		const ws2 = await join(gs2, "u1");
@@ -285,6 +287,73 @@ describe("sessions", () => {
 		const ws3 = await join(gs, "u1");
 		expect(last(ws3, "welcome")).toBeDefined();
 		expect(last(ws, "kicked")).toBeUndefined();
+	});
+
+	test("at most 20 token checks run at once; extra hellos close with 1013", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const slow = { ...auth, verify: async (t: string) => (await gate, auth.verify(t)) };
+		const gs = server(store, { auth: slow });
+		const socks = Array.from({ length: 21 }, () => sock());
+		const pending = socks.map((ws, i) => {
+			gs.open(ws as any);
+			return gs.message(ws as any, raw({ t: "hello", v: 1, token: `tok:v${i}`, instanceId: "i", guildId: null }));
+		});
+		await Bun.sleep(10);
+		expect(socks[20]!.close).toHaveBeenCalledWith(1013, "try again later");
+		expect(last(socks[20]!, "kicked")).toBeUndefined();
+		for (const ws of socks.slice(0, 20)) expect(ws.close).not.toHaveBeenCalled();
+		release();
+		await Promise.all(pending);
+		expect(last(socks[0]!, "welcome")).toBeDefined();
+		// The slots free up once the checks finish
+		const ws = await join(gs, "late");
+		expect(last(ws, "welcome")).toBeDefined();
+	});
+
+	test("a socket that hasn't finished hello within 10 s is closed", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const slow = { ...auth, verify: async (t: string) => (t === "tok:stuck" ? (await gate, auth.verify(t)) : auth.verify(t)) };
+		const gs = server(store, { auth: slow });
+		const silent = sock();
+		gs.open(silent as any);
+		const stuck = sock();
+		gs.open(stuck as any);
+		const pending = gs.message(stuck as any, raw({ t: "hello", v: 1, token: "tok:stuck", instanceId: "i", guildId: null }));
+		const ok = await join(gs, "u1");
+		clock += 9_999;
+		gs.tick();
+		expect(silent.close).not.toHaveBeenCalled();
+		clock += 1;
+		gs.tick();
+		expect(silent.close).toHaveBeenCalledWith(1008, "hello timeout");
+		expect(stuck.close).toHaveBeenCalledWith(1008, "hello timeout");
+		expect(ok.close).not.toHaveBeenCalled();
+		release();
+		await pending;
+		expect(last(stuck, "welcome")).toBeUndefined();
+	});
+
+	test("shutdown waits for queued instance changes before the final save", async () => {
+		const gs = server();
+		const ws = await join(gs, "u1");
+		const { id } = welcome(ws).instance;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		let done = false;
+		const rt = (gs as any).instances.get(id);
+		void (gs as any).run(rt, async () => {
+			await gate;
+			done = true;
+		});
+		let stopped = false;
+		const stopping = gs.shutdown().then(() => (stopped = true));
+		await Bun.sleep(20);
+		expect(stopped).toBe(false);
+		release();
+		await stopping;
+		expect(done).toBe(true);
 	});
 
 	test("shutdown unloads every land", async () => {
@@ -450,6 +519,50 @@ describe("lobbies", () => {
 		gs.close(a2 as any);
 		const a3 = await join(gs, "a");
 		expect(welcome(a3).instance.lobby!.n).toBe(2);
+	});
+
+	test("a new launch from a guild goes to its home lobby, a reload of the same launch keeps the switched one", async () => {
+		member.a = ["G"];
+		await seedWorld("a", 0.5, -0.5);
+		const gs = server();
+		const a = await join(gs, "a", "G", "launch-1");
+		expect(welcome(a).instance.lobby!.n).toBe(2);
+		await gs.message(a as any, raw({ t: "switchLobby", lobby: 1 }));
+		expect(welcome(a).instance.lobby!.n).toBe(1);
+		gs.close(a as any);
+		// Same Activity launch (a reload): the saved lobby
+		const a2 = await join(gs, "a", "G", "launch-1");
+		expect(welcome(a2).instance.lobby!.n).toBe(1);
+		// A new launch from G replacing the live session: G's home lobby
+		const a3 = await join(gs, "a", "G", "launch-2");
+		expect(welcome(a3).instance.lobby).toEqual({ n: 2, label: "Home · G-name" });
+		await gs.message(a3 as any, raw({ t: "switchLobby", lobby: 1 }));
+		gs.close(a3 as any);
+		// A new launch from G after the socket closed: G's home lobby again
+		const a4 = await join(gs, "a", "G", "launch-3");
+		expect(welcome(a4).instance.lobby).toEqual({ n: 2, label: "Home · G-name" });
+	});
+
+	test("a saved lobby number reused by another guild's home is not joined", async () => {
+		member.k = ["K"];
+		// p was last in lobby #2 during an earlier launch, when #2 was some other guild's home
+		await seedWorld("p", 0.5, -0.5, 2, "d", "old-launch");
+		await seedWorld("k", 0.5, -0.5);
+		const gs = server();
+		expect(welcome(await join(gs, "k", "K")).instance.lobby).toEqual({ n: 2, label: "Home · K-name" });
+		expect(welcome(await join(gs, "p", null, "new-launch")).instance.lobby).toEqual({ n: 1, label: "Public" });
+	});
+
+	test("switchLobby is rate limited like other actions", async () => {
+		member.b = ["G"];
+		await seedWorld("a", 0.5, -0.5);
+		await seedWorld("b", 5.5, -0.5);
+		const gs = server();
+		const a = await join(gs, "a");
+		await join(gs, "b", "G");
+		for (let i = 0; i < 7; i++) await gs.message(a as any, raw({ t: "switchLobby", lobby: i % 2 ? 1 : 2 }));
+		expect(last(a, "toast")).toEqual({ t: "toast", msg: "Slow down.", ok: false });
+		expect(sent(a).filter((m) => m.t === "welcome")).toHaveLength(1 + 6);
 	});
 
 	test("saved lobby that no longer exists falls back to placement", async () => {
@@ -905,6 +1018,7 @@ describe("actions", () => {
 			payments: {
 				hasPass: async () => false,
 				razorpayEnabled: true,
+				links: new LinkCooldown(),
 				createRazorpayLink: async (_userId, product) => (links.push(product.id), "https://rzp.io/l/abc"),
 			},
 			dm: async (userId, content) => void dms.push([userId, content]),
@@ -929,7 +1043,7 @@ describe("actions", () => {
 	test("buyProduct sends one link per product per 30 s", async () => {
 		const dms: string[] = [];
 		const gs = server(store, {
-			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async () => "https://rzp.io/l/abc" },
+			payments: { hasPass: async () => false, razorpayEnabled: true, links: new LinkCooldown(), createRazorpayLink: async () => "https://rzp.io/l/abc" },
 			dm: async (_u, content) => void dms.push(content),
 		});
 		const ws = await join(gs, "u1");
@@ -1440,7 +1554,7 @@ describe("emotes", () => {
 		const links: string[] = [];
 		const dms: string[] = [];
 		const gs = server(store, {
-			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+			payments: { hasPass: async () => false, razorpayEnabled: true, links: new LinkCooldown(), createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
 			dm: async (_u, content) => void dms.push(content),
 		});
 		const [a] = await trio(gs);
@@ -1473,7 +1587,7 @@ describe("emotes", () => {
 		const links: string[] = [];
 		for (const itemId of productById("emotes_party_pack")!.items!) await Ownership.create({ userId: "a", itemId, source: "gems" });
 		const gs = server(store, {
-			payments: { hasPass: async () => false, razorpayEnabled: true, createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
+			payments: { hasPass: async () => false, razorpayEnabled: true, links: new LinkCooldown(), createRazorpayLink: async (_u, product) => (links.push(product.id), "https://rzp.io/l/pack") },
 		});
 		const [a] = await trio(gs);
 		await act(gs, a, { t: "buyProduct", productId: "emotes_party_pack" });

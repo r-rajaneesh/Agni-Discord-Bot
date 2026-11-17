@@ -1,5 +1,7 @@
 const API = "https://discord.com/api/v10";
 const TTL_MS = 300_000;
+/** How long a token Discord rejected is refused without asking again */
+const FAILED_TTL_MS = 60_000;
 const MAX_ENTRIES = 10_000;
 
 type TUser = { id: string; name: string };
@@ -12,6 +14,7 @@ export default class ActivityAuth {
 	private fetch: typeof fetch;
 	private now: () => number;
 	private users = new Map<string, TEntry<TUser>>();
+	private failed = new Map<string, TEntry<true>>();
 	private guilds = new Map<string, TEntry<TGuild[]>>();
 
 	constructor(opts: { clientId: string; clientSecret: string; fetch?: typeof fetch; now?: () => number }) {
@@ -23,7 +26,7 @@ export default class ActivityAuth {
 
 	// Total entries held in both caches.
 	get cacheSize(): number {
-		return this.users.size + this.guilds.size;
+		return this.users.size + this.guilds.size + this.failed.size;
 	}
 
 	async exchangeCode(code: string): Promise<{ access_token: string } | null> {
@@ -53,7 +56,10 @@ export default class ActivityAuth {
 	async verify(accessToken: string): Promise<TUser | null> {
 		const hit = this.read(this.users, accessToken);
 		if (hit) return hit;
-		const data = await this.get<{ id: string; username: string; global_name?: string | null }>("/users/@me", accessToken);
+		if (this.read(this.failed, accessToken)) return null;
+		const data = await this.get<{ id: string; username: string; global_name?: string | null }>("/users/@me", accessToken, () =>
+			this.write(this.failed, accessToken, true, FAILED_TTL_MS),
+		);
 		if (!data) return null;
 		const user = { id: data.id, name: data.global_name ?? data.username };
 		this.write(this.users, accessToken, user);
@@ -71,11 +77,13 @@ export default class ActivityAuth {
 		return list.find((g) => g.id === guildId) ?? null;
 	}
 
-	private async get<T>(path: string, accessToken: string): Promise<T | null> {
+	// `rejected` runs when Discord refuses the token itself (a 4xx other than 429), not on outages or rate limits
+	private async get<T>(path: string, accessToken: string, rejected?: () => void): Promise<T | null> {
 		try {
 			const res = await this.fetch(API + path, { headers: { Authorization: `Bearer ${accessToken}` } });
 			if (!res.ok) {
 				console.warn(`[ActivityAuth] GET ${path} failed: ${res.status}`);
+				if (res.status >= 400 && res.status < 500 && res.status !== 429) rejected?.();
 				return null;
 			}
 			return (await res.json()) as T;
@@ -96,8 +104,8 @@ export default class ActivityAuth {
 		return entry.value;
 	}
 
-	private write<T>(cache: Map<string, TEntry<T>>, key: string, value: T) {
-		cache.set(key, { value, expires: this.now() + TTL_MS });
+	private write<T>(cache: Map<string, TEntry<T>>, key: string, value: T, ttl = TTL_MS) {
+		cache.set(key, { value, expires: this.now() + ttl });
 		if (cache.size > MAX_ENTRIES) this.sweep(cache);
 	}
 

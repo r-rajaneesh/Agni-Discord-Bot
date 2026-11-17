@@ -4,7 +4,8 @@ import { createLand, type TDir, type TInstance, type TPlayerState, type TTileSta
 import type EconomyManager from "./EconomyManager";
 import { ChatLog, Land, LandTile, PlayerState } from "./models/Game";
 
-export type TLocation = { instanceKind: "land" | "world"; landId?: string; lobby?: number; x: number; y: number; facing: TDir };
+/** `instanceId`: the Discord Activity launch the player was last in, so a reload of that launch keeps its lobby */
+export type TLocation = { instanceKind: "land" | "world"; landId?: string; lobby?: number; instanceId?: string; x: number; y: number; facing: TDir };
 export type TStoredPlayer = TPlayerState & { location: TLocation };
 
 export const landInstanceId = (landId: string) => `land:${landId}`;
@@ -49,6 +50,7 @@ export default class InstanceStore {
 		const location: TLocation = { instanceKind: loc.instanceKind, x: loc.x as number, y: loc.y as number, facing: loc.facing as TDir };
 		if (loc.landId != null) location.landId = loc.landId;
 		if (loc.lobby != null) location.lobby = loc.lobby;
+		if (loc.instanceId != null) location.instanceId = loc.instanceId;
 		return {
 			userId,
 			name: p.name as string,

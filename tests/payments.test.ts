@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHmac } from "node:crypto";
+import { EventEmitter } from "node:events";
+import * as Discord from "discord.js";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import config from "../config";
@@ -18,15 +20,26 @@ const dms: string[] = [];
 const pushed: string[] = [];
 const owned: string[] = [];
 const warns: unknown[][] = [];
+const errors: unknown[][] = [];
 const noop = () => {};
-const client: any = {
+let ready = true;
+// Runs inside revoke(), so a test can see the purchase's state mid-refund
+let onPushOwned = async (_id: string) => {};
+const client: any = Object.assign(new EventEmitter(), {
 	economy: new EconomyManager(),
 	config,
-	log: { info: noop, debug: noop, warn: (...a: unknown[]) => void warns.push(a), error: noop },
+	log: { info: noop, debug: noop, warn: (...a: unknown[]) => void warns.push(a), error: (...a: unknown[]) => void errors.push(a) },
 	makeEmbed: (e: any) => e,
+	isReady: () => ready,
 	users: { fetch: async (id: string) => ({ send: async () => dms.push(id) }) },
-	gameServer: { pushWallet: async (id: string) => void pushed.push(id), pushOwned: async (id: string) => void owned.push(id) },
-};
+	gameServer: {
+		pushWallet: async (id: string) => void pushed.push(id),
+		pushOwned: async (id: string) => {
+			owned.push(id);
+			await onPushOwned(id);
+		},
+	},
+});
 const payments = new PaymentManager(client);
 
 const sign = (body: string) => createHmac("sha256", SECRET).update(body).digest("hex");
@@ -187,6 +200,73 @@ describe("emotes", () => {
 		expect(JSON.stringify(warns.at(-1))).toContain("pay_e5");
 		// Nothing changed hands
 		expect(await Ownership.countDocuments({ userId: "e5", source: "gems" })).toBe(5);
+	});
+
+	test("a paid event replayed after the refund grants nothing", async () => {
+		const p = await pay("e7", "pay_e7");
+		let statusAtRevoke: string | undefined;
+		onPushOwned = async (id) => {
+			if (id === "e7") statusAtRevoke = (await Purchase.findById(p._id).lean())!.status;
+		};
+		await refund("pay_e7");
+		onPushOwned = async () => {};
+		// The purchase is marked refunded before its items are taken, so a crash mid-refund can't leave it "paid"
+		expect(statusAtRevoke).toBe("refunded");
+		expect(await items("e7")).toEqual([]);
+		const body = paidEvent(String(p._id), "pay_e7", 14900);
+		expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		expect(await items("e7")).toEqual([]);
+		expect(await Purchase.findById(p._id)).toMatchObject({ status: "refunded" });
+		expect(dms.filter((d) => d === "e7")).toHaveLength(1);
+	});
+
+	test("a refund for a payment we never recorded is logged with its ids", async () => {
+		const n = errors.length;
+		await refund("pay_unknown");
+		expect(errors.slice(n)).toHaveLength(1);
+		expect(JSON.stringify(errors.at(-1))).toContain("rfnd_pay_unknown");
+		expect(JSON.stringify(errors.at(-1))).toContain("pay_unknown");
+	});
+
+	test("the paid amount is checked against the price when the link was made", async () => {
+		const pack = productById("emotes_party_pack")!;
+		const p = await Purchase.create({ userId: "e8", productId: pack.id, provider: "razorpay", amount: 14900 });
+		const price = pack.priceINR;
+		pack.priceINR = 19900;
+		try {
+			const body = paidEvent(String(p._id), "pay_e8", 14900);
+			expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		} finally {
+			pack.priceINR = price;
+		}
+		expect(await items("e8")).toEqual([...PACK].sort());
+	});
+
+	test("a receipt for a webhook served before login goes out once the bot is ready", async () => {
+		ready = false;
+		try {
+			await pay("e9", "pay_e9");
+			expect(await items("e9")).toEqual([...PACK].sort());
+			expect(dms.filter((d) => d === "e9")).toHaveLength(0);
+			ready = true;
+			client.emit(Discord.Events.ClientReady, client);
+			await Bun.sleep(10);
+			expect(dms.filter((d) => d === "e9")).toHaveLength(1);
+		} finally {
+			ready = true;
+		}
+	});
+
+	test("the first delivery sends the receipt even when an earlier attempt already granted", async () => {
+		// A crash after the grant but before `notified` was set
+		const pack = productById("emotes_party_pack")!;
+		const p = await Purchase.create({ userId: "e10", productId: pack.id, provider: "razorpay", amount: 14900 });
+		await payments.grant("e10", pack, "razorpay:pay_e10");
+		const body = paidEvent(String(p._id), "pay_e10", 14900);
+		expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		expect(await payments.handleRazorpayWebhook(body, sign(body))).toBe(200);
+		expect(dms.filter((d) => d === "e10")).toHaveLength(1);
+		expect(await Purchase.findById(p._id)).toMatchObject({ status: "paid", notified: true });
 	});
 
 	test("refund then rebuy works", async () => {

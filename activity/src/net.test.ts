@@ -7,7 +7,7 @@ class FakeWS {
 	sent: string[] = [];
 	onopen: (() => void) | null = null;
 	onmessage: ((e: { data: string }) => void) | null = null;
-	onclose: (() => void) | null = null;
+	onclose: ((e: { code: number }) => void) | null = null;
 	onerror: (() => void) | null = null;
 	readyState = 0;
 	constructor(public url: string) {
@@ -18,7 +18,7 @@ class FakeWS {
 	}
 	close() {
 		this.readyState = 3;
-		this.onclose?.();
+		this.onclose?.({ code: 1000 });
 	}
 	open() {
 		this.readyState = 1;
@@ -27,9 +27,9 @@ class FakeWS {
 	recv(m: TServerMsg) {
 		this.onmessage?.({ data: JSON.stringify(m) });
 	}
-	drop() {
+	drop(code = 1006) {
 		this.readyState = 3;
-		this.onclose?.();
+		this.onclose?.({ code });
 	}
 }
 
@@ -142,4 +142,16 @@ test("close after drop cancels the pending reconnect", () => {
 	conn.close();
 	timers.shift()!();
 	expect(FakeWS.all.length).toBe(before);
+});
+
+test("a server restart (1012) reconnects", () => {
+	const { last, delays, timers } = setup();
+	last().open();
+	last().recv(WELCOME);
+	last().drop(1012);
+	expect(delays).toEqual([500]);
+	timers.shift()!();
+	expect(FakeWS.all).toHaveLength(2);
+	last().open();
+	expect(last().sent).toEqual([JSON.stringify(HELLO)]);
 });

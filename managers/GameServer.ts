@@ -20,7 +20,7 @@ import type InstanceStore from "./InstanceStore";
 import type PaymentManager from "./PaymentManager";
 import { ownedItems } from "./models/Cosmetics";
 import { chat, type TChatCtx } from "./game/chat";
-import { action, dailyGems, strike, type TActionCtx } from "./game/actions";
+import { action, dailyGems, limited, strike, type TActionCtx } from "./game/actions";
 import { buyCosmetic, emote, ownedMsg } from "./game/cosmetics";
 import Wildlife from "./game/animals";
 import { indexTile, near, tilesIn, tilesNear, type TChunk, type TTileIndex } from "./game/aoi";
@@ -35,6 +35,12 @@ const FLUSH_MS = 5000;
 const LAND_UNLOAD_MS = 5 * 60_000;
 const LOBBY_CLOSE_MS = 60_000;
 const MAX_INVALID = 20;
+/** Token checks (Discord API calls) in flight at once; more hellos are told to retry */
+const MAX_VERIFYING = 20;
+/** A socket that hasn't finished hello by then is closed */
+const HELLO_TIMEOUT_MS = 10_000;
+/** How long shutdown waits for queued instance changes */
+const SHUTDOWN_DRAIN_MS = 5000;
 const PALETTE = ["#e74c3c", "#3498db", "#9b59b6", "#e67e22", "#1abc9c", "#f1c40f", "#e84393", "#2ecc71"];
 const PRICE_ITEMS = Object.values(ITEMS)
 	.filter((i) => i.tradeable)
@@ -71,6 +77,8 @@ export interface TSession {
 	visible: Set<TSession>;
 	/** Guild of the launch, when the user is a member; picks the home lobby */
 	home: { id: string; name: string } | null;
+	/** Discord's id for this Activity launch; a reload of the same launch keeps its lobby */
+	instanceId: string;
 	/** Last position and lobby in the open world, used when arriving from private land */
 	lastWorld: { x: number; y: number; facing: TDir; lobby?: number } | null;
 	/** The last `ents` list sent, as JSON, so an unchanged list is not sent again */
@@ -95,6 +103,7 @@ export interface TSession {
 interface TConn {
 	ws: TSocket;
 	state: "new" | "pending" | "ready" | "closed";
+	openedAt: number;
 	invalid: number;
 	session?: TSession;
 }
@@ -103,7 +112,7 @@ export interface TGameServerDeps {
 	store: InstanceStore;
 	auth: Pick<ActivityAuth, "verify" | "guild">;
 	eco: EconomyManager;
-	payments: Pick<PaymentManager, "hasPass" | "createRazorpayLink" | "razorpayEnabled">;
+	payments: Pick<PaymentManager, "hasPass" | "createRazorpayLink" | "razorpayEnabled" | "links">;
 	dm: (userId: string, content: string) => Promise<void>;
 	log: TLog;
 	now?: () => number;
@@ -134,6 +143,8 @@ export default class GameServer {
 	private lobbies: Lobbies<TRuntime>;
 	/** Hellos for one user run one at a time */
 	private userLocks = new Map<string, Promise<unknown>>();
+	/** Token checks in flight */
+	private verifying = 0;
 	/** Player saves run in order, so an older position never overwrites a newer one */
 	private saves: Promise<void> = Promise.resolve();
 	private ctx: TActionCtx;
@@ -149,7 +160,6 @@ export default class GameServer {
 			deps,
 			now: this.now,
 			rand: deps.rand ?? Math.random,
-			linkSentAt: new Map(),
 			send: (ws, msg) => this.send(ws, msg),
 			toast: (s, msg, ok) => this.toast(s, msg, ok),
 			run: (rt, fn) => this.run(rt, fn),
@@ -186,7 +196,7 @@ export default class GameServer {
 	// ---------- sockets ----------
 
 	open(ws: TSocket): void {
-		this.conns.set(ws.data.connId, { ws, state: "new", invalid: 0 });
+		this.conns.set(ws.data.connId, { ws, state: "new", openedAt: this.now(), invalid: 0 });
 	}
 
 	close(ws: TSocket): void {
@@ -287,10 +297,19 @@ export default class GameServer {
 	private async hello(conn: TConn, m: Extract<TClientMsg, { t: "hello" }>) {
 		try {
 			if (m.v !== PROTOCOL_VERSION) return this.drop(conn, 4000, "outdated client", "outdated client");
-			const user = await this.deps.auth.verify(m.token);
+			// 1013 without kicked: the client retries with backoff
+			if (this.verifying >= MAX_VERIFYING) return this.drop(conn, 1013, "try again later");
+			this.verifying++;
+			let user: Awaited<ReturnType<TGameServerDeps["auth"]["verify"]>>;
+			try {
+				user = await this.deps.auth.verify(m.token);
+			} finally {
+				this.verifying--;
+			}
+			if (conn.state === "closed") return;
 			if (!user) return this.drop(conn, 4001, "unauthorized", "unauthorized");
 			const home = m.guildId ? await this.deps.auth.guild(m.token, m.guildId) : null;
-			await this.forUser(user.id, () => this.join(conn, user, home));
+			await this.forUser(user.id, () => this.join(conn, user, home, m.instanceId));
 		} catch (e) {
 			this.deps.log.error("[GAME] hello failed", e);
 			this.drop(conn, 1011, "server error", "server error");
@@ -308,7 +327,7 @@ export default class GameServer {
 		return run;
 	}
 
-	private async join(conn: TConn, user: { id: string; name: string }, home: { id: string; name: string } | null) {
+	private async join(conn: TConn, user: { id: string; name: string }, home: { id: string; name: string } | null, instanceId: string) {
 		const userId = user.id;
 		// A live session is fresher than the database
 		const old = this.sessions.get(userId);
@@ -350,18 +369,30 @@ export default class GameServer {
 			colour: prev?.colour ?? colourOf(userId),
 			premium,
 		};
+		// A lobby from before is kept only within the same Activity launch, or when it is the launch guild's home;
+		// launching from a server otherwise puts the player in its home lobby (spec §4.3)
+		const sameLaunch = (src ? src.instanceId : stored?.location.instanceId) === instanceId;
+		const keep = (n: number | undefined) => {
+			const rt = n === undefined ? undefined : this.lobbies.get(n);
+			if (!rt || rt.inst.players.size >= LOBBY_CAP) return undefined;
+			return sameLaunch || (home !== null && rt.inst.lobby!.homeGuildId === home.id) ? rt : undefined;
+		};
 		let lastWorld = src?.lastWorld ?? null;
 		if (stored?.location.instanceKind === "world")
 			lastWorld = { x: stored.x, y: stored.y, facing: stored.facing, ...(stored.location.lobby === undefined ? {} : { lobby: stored.location.lobby }) };
+		// Travel from private land back to the world follows the same rule
+		if (lastWorld?.lobby !== undefined && !keep(lastWorld.lobby)) {
+			const { lobby: _l, ...pos } = lastWorld;
+			lastWorld = pos;
+		}
 		// Only a position on the same kind of instance is reused
 		const at = prev && (src ? src.rt.inst.kind : kind) === kind ? { x: prev.x, y: prev.y, facing: prev.facing } : undefined;
 		// Leaves first, so the old session's slot doesn't count against its lobby
 		if (current) this.drop(this.connOf(current), 4002, "opened elsewhere", "opened elsewhere");
 
-		// The current or saved lobby while it is open and has room, else the placement rules
-		const n = src ? src.rt.inst.lobby?.n : stored?.location.lobby;
-		const kept = n === undefined ? undefined : this.lobbies.get(n);
-		const dest = rt ?? (kept && kept.inst.players.size < LOBBY_CAP ? kept : this.lobbies.pick(home));
+		// The current or saved lobby while it is open, has room and may be kept, else the placement rules
+		const kept = keep(src ? src.rt.inst.lobby?.n : stored?.location.lobby);
+		const dest = rt ?? kept ?? this.lobbies.pick(home);
 		const s: TSession = {
 			ws: conn.ws,
 			userId,
@@ -373,6 +404,7 @@ export default class GameServer {
 			chunk: { cx: 0, cy: 0 },
 			visible: new Set(),
 			home,
+			instanceId,
 			lastWorld,
 			ents: "[]",
 			actions: [],
@@ -435,6 +467,7 @@ export default class GameServer {
 	}
 
 	private async switchLobby(s: TSession, n: number) {
+		if (limited(this.ctx, s)) return;
 		const check = () => {
 			const rt = this.lobbies.get(n);
 			if (!rt) return `No lobby #${n}.`;
@@ -568,6 +601,7 @@ export default class GameServer {
 			for (const s of movers) this.moved(s);
 			this.tickAnimals(now);
 			this.sweep(now);
+			this.helloTimeouts(now);
 			if (now - this.lastFlush >= FLUSH_MS) this.flush();
 		} catch (e) {
 			this.deps.log.error("[GAME] tick failed", e);
@@ -651,6 +685,12 @@ export default class GameServer {
 		}
 	}
 
+	// Closes sockets that haven't finished hello in time
+	private helloTimeouts(now: number) {
+		for (const conn of [...this.conns.values()])
+			if ((conn.state === "new" || conn.state === "pending") && now - conn.openedAt >= HELLO_TIMEOUT_MS) this.drop(conn, 1008, "hello timeout");
+	}
+
 	// ---------- persistence ----------
 
 	private stored(s: TSession): TStoredPlayer {
@@ -658,8 +698,8 @@ export default class GameServer {
 		const { inst } = s.rt;
 		const location: TLocation =
 			inst.kind === "land"
-				? { instanceKind: "land", landId: landIdOf(inst), x: p.x, y: p.y, facing: p.facing }
-				: { instanceKind: "world", lobby: inst.lobby!.n, x: p.x, y: p.y, facing: p.facing };
+				? { instanceKind: "land", landId: landIdOf(inst), instanceId: s.instanceId, x: p.x, y: p.y, facing: p.facing }
+				: { instanceKind: "world", lobby: inst.lobby!.n, instanceId: s.instanceId, x: p.x, y: p.y, facing: p.facing };
 		return { ...p, location };
 	}
 
@@ -741,16 +781,26 @@ export default class GameServer {
 		if (s) s.globalMutedUntil = until;
 	}
 
-	/** Saves every player and closes every socket */
+	/**
+	 * Closes every socket, lets queued instance changes finish (up to SHUTDOWN_DRAIN_MS), then saves every player.
+	 * Sockets close with 1012 and no `kicked`, so clients reconnect to the restarted server.
+	 */
 	async shutdown(): Promise<void> {
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
-		this.save([...this.sessions.values()].map((s) => this.stored(s)));
-		this.sessions.clear();
 		for (const conn of [...this.conns.values()]) {
 			conn.session = undefined;
-			this.drop(conn, 1012, "server restarting", "server restarting");
+			this.drop(conn, 1012, "server restarting");
 		}
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const drained = await Promise.race([
+			Promise.all([...this.instances.values()].map((rt) => rt.queue)).then(() => true),
+			new Promise<false>((r) => (timeout = setTimeout(() => r(false), SHUTDOWN_DRAIN_MS))),
+		]);
+		clearTimeout(timeout);
+		if (!drained) this.deps.log.warn("[GAME] shutdown: instance queues still busy, saving anyway");
+		this.save([...this.sessions.values()].map((s) => this.stored(s)));
+		this.sessions.clear();
 		for (const { inst } of this.instances.values()) if (inst.kind === "land") dropLand(inst.seed);
 		this.instances.clear();
 		this.lands.clear();

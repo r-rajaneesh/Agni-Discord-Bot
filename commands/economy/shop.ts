@@ -1,6 +1,6 @@
 import * as Discord from "discord.js";
 import CommandBuilder from "@Builders/CommandBuilder";
-import { PRODUCTS, productById } from "../../game/data/products";
+import { GEM_PRICES, PRODUCTS, productById } from "../../game/data/products";
 import type ClientManager from "@Managers/ClientManager";
 
 async function shopView(client: ClientManager, userId: string, status = "") {
@@ -10,10 +10,10 @@ async function shopView(client: ClientManager, userId: string, status = "") {
 		.addTextDisplayComponents(
 			new Discord.TextDisplayBuilder().setContent(
 				[
-					"## 💎 Agni Gem Shop",
+					"## 🛒 Agni Shop",
 					`You have 💎 **${wallet.gems.toLocaleString()}** · Farm Pass: ${pass ? "**active** 👑" : "not active"}`,
 					status && `> ${status}`,
-					"-# Gems are for cosmetics and convenience. They cannot be traded, turned into coins, or cashed out.",
+					"-# Gems are earned in Agni Valley and are never sold. They cannot be traded, turned into coins, or cashed out.",
 				]
 					.filter(Boolean)
 					.join("\n"),
@@ -42,19 +42,55 @@ async function shopView(client: ClientManager, userId: string, status = "") {
 	if (!client.payments.razorpayEnabled && !PRODUCTS.some((p) => p.discordSku))
 		container.addTextDisplayComponents(new Discord.TextDisplayBuilder().setContent("_Purchases are not enabled on this bot yet._"));
 
-	// TODO(Task 10): the "Spend gems" energy refill returns once the Activity can apply it
+	container.addSeparatorComponents(new Discord.SeparatorBuilder().setDivider(true));
+	container.addTextDisplayComponents(new Discord.TextDisplayBuilder().setContent("### Spend gems"));
+	container.addActionRowComponents(
+		new Discord.ActionRowBuilder<Discord.ButtonBuilder>().addComponents(
+			new Discord.ButtonBuilder()
+				.setCustomId("shop:spend:energy")
+				.setLabel(pass ? "Energy refill (free daily with Pass)" : `Energy refill · ${GEM_PRICES.energyRefill} 💎`)
+				.setEmoji({ name: "⚡" })
+				.setStyle(Discord.ButtonStyle.Success),
+		),
+	);
 	return { components: [container], flags: Discord.MessageFlags.IsComponentsV2 } as const;
+}
+
+// Pays for an energy refill (the Pass's free daily one first, else gems), then fills energy in the game
+async function refill(client: ClientManager, userId: string): Promise<string> {
+	const game = client.gameServer;
+	if (!game) return "The game is not running right now. Try again later.";
+	let paid: "pass" | "gems" | null = null;
+	if (await client.payments.hasPass(userId)) {
+		// An empty ledger entry with a per-day key marks the free refill as used
+		const day = new Date().toISOString().slice(0, 10);
+		const r = await client.economy.transact([], { reason: "pass_refill", idempotencyKey: `passrefill:${userId}:${day}` });
+		if (r.ok && !r.duplicate) paid = "pass";
+	}
+	if (!paid) {
+		const r = await client.economy.transact([{ userId, gems: -GEM_PRICES.energyRefill }], { reason: "gem_energy_refill" });
+		if (!r.ok) return "Not enough gems.";
+		paid = "gems";
+	}
+	try {
+		await game.refillEnergy(userId);
+	} catch (e) {
+		client.log.error("[SHOP] energy refill failed", e);
+		if (paid === "gems") await client.economy.transact([{ userId, gems: GEM_PRICES.energyRefill }], { reason: "gem_energy_refill_refund" });
+		return "Couldn't refill your energy. Try again.";
+	}
+	return paid === "pass" ? "⚡ Energy refilled (Farm Pass daily refill)." : `⚡ Energy refilled for ${GEM_PRICES.energyRefill} 💎.`;
 }
 
 export default new CommandBuilder({
 	name: "shop",
-	description: "Buy gems and the Farm Pass",
+	description: "Buy the Farm Pass and spend gems",
 	permissions: [],
 	isLocked: false,
 	isOwnerOnly: false,
 	type: "slash_command",
 	customIdPrefix: "shop",
-	builder: new Discord.SlashCommandBuilder().setName("shop").setDescription("Buy gems and the Farm Pass"),
+	builder: new Discord.SlashCommandBuilder().setName("shop").setDescription("Buy the Farm Pass and spend gems"),
 	execute: async ({ client, interaction }) => {
 		if (!interaction) return;
 		const userId = interaction.user.id;
@@ -87,11 +123,9 @@ export default new CommandBuilder({
 			});
 		}
 
-		// Old shop messages may still show the refill button. Nothing can be refilled until the
-		// Activity launches (Task 10), so it takes no gems and does not use up the Pass refill.
 		if (action === "spend" && arg === "energy") {
 			await interaction.deferUpdate();
-			return interaction.editReply(await shopView(client, userId, "Energy refills return when Agni Valley launches as an Activity."));
+			return interaction.editReply(await shopView(client, userId, await refill(client, userId)));
 		}
 		return interaction.deferUpdate();
 	},

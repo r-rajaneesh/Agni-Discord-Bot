@@ -21,16 +21,25 @@ describe("commands", () => {
 	});
 });
 
-// Until the Activity can refill energy (Task 10), the old refill button must not charge anything
+// The gem-paid energy refill, and the Farm Pass free daily one, fill energy through the game server
 describe("shop energy refill", () => {
-	test("takes no gems and does not use up the Pass refill", async () => {
+	async function press(opts: { pass: boolean; gemsOk?: boolean; game?: boolean }) {
 		const { default: shop } = await import(path.resolve("./commands/economy/shop.ts"));
-		const transact: unknown[] = [];
+		const transact: any[][] = [];
+		const refills: string[] = [];
 		const edits: any[] = [];
 		const client = {
 			config: { colours: { blurple: 0x5865f2 } },
-			economy: { wallet: async () => ({ gems: 50, coins: 0 }), transact: async (...a: unknown[]) => (transact.push(a), { ok: true }) },
-			payments: { hasPass: async () => true, razorpayEnabled: false },
+			economy: {
+				wallet: async () => ({ gems: 50, coins: 0 }),
+				transact: async (...a: any[]) => {
+					transact.push(a);
+					return a[0].length && opts.gemsOk === false ? { ok: false, error: "insufficient_gems", message: "insufficient_gems" } : { ok: true };
+				},
+			},
+			payments: { hasPass: async () => opts.pass, razorpayEnabled: false },
+			gameServer: opts.game === false ? undefined : { refillEnergy: async (id: string) => void refills.push(id) },
+			log: { error: () => {} },
 		};
 		const interaction = {
 			user: { id: "u1" },
@@ -41,8 +50,43 @@ describe("shop energy refill", () => {
 			editReply: async (m: unknown) => edits.push(m),
 		};
 		await shop.execute({ client, interaction });
-		expect(transact).toHaveLength(0);
-		expect(JSON.stringify(edits[0].components[0].toJSON())).toContain("Energy refills return when Agni Valley launches as an Activity.");
-		expect(JSON.stringify(edits[0].components[0].toJSON())).not.toContain("shop:spend:energy");
+		return { transact, refills, text: JSON.stringify(edits[0].components[0].toJSON()) };
+	}
+
+	test("debits gems, then refills", async () => {
+		const r = await press({ pass: false });
+		expect(r.transact).toHaveLength(1);
+		expect(r.transact[0]![0]).toEqual([{ userId: "u1", gems: -10 }]);
+		expect(r.refills).toEqual(["u1"]);
+		expect(r.text).toContain("Energy refilled for 10");
+		expect(r.text).toContain("shop:spend:energy");
+	});
+
+	test("the Farm Pass refill is free once a day", async () => {
+		const r = await press({ pass: true });
+		expect(r.transact).toHaveLength(1);
+		expect(r.transact[0]![0]).toEqual([]);
+		expect(r.transact[0]![1].idempotencyKey).toMatch(/^passrefill:u1:\d{4}-\d{2}-\d{2}$/);
+		expect(r.refills).toEqual(["u1"]);
+	});
+
+	test("without enough gems nothing is refilled", async () => {
+		const r = await press({ pass: false, gemsOk: false });
+		expect(r.refills).toEqual([]);
+		expect(r.text).toContain("Not enough gems.");
+	});
+
+	test("charges nothing while the game server is down", async () => {
+		const r = await press({ pass: false, game: false });
+		expect(r.transact).toHaveLength(0);
+		expect(r.refills).toEqual([]);
+	});
+});
+
+describe("shop", () => {
+	test("sells no gems", async () => {
+		const { PRODUCTS } = await import("../game/data/products");
+		expect(PRODUCTS.map((p) => p.id)).toEqual(["farm_pass"]);
+		expect(PRODUCTS.every((p) => p.kind === "pass")).toBe(true);
 	});
 });

@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import Razorpay from "razorpay";
 import { productById, productBySku, type TProduct } from "../game/data/products";
 import type ClientManager from "./ClientManager";
-import { LedgerEntry, Purchase, Subscription } from "./models/Economy";
+import { Purchase, Subscription } from "./models/Economy";
 
 const DAY_MS = 86_400_000;
 const LINK_TTL_MS = 30 * 60 * 1000;
@@ -31,12 +31,6 @@ export default class PaymentManager {
 	// ---------- grant / revoke ----------
 
 	public async grant(userId: string, product: TProduct, sourceKey: string, endsAt?: Date | null) {
-		if (product.kind === "gems")
-			return this.client.economy.transact([{ userId, gems: product.gems! }], {
-				reason: "purchase",
-				ref: product.id,
-				idempotencyKey: sourceKey,
-			});
 		// Pass: stack on top of any active pass so renewals never lose days
 		const existing = await Subscription.findOne({ sourceId: sourceKey }).lean();
 		if (existing) return { ok: true as const, duplicate: true };
@@ -58,19 +52,9 @@ export default class PaymentManager {
 		return { ok: true as const };
 	}
 
-	/** Refund/chargeback: claw back gems (balance may go negative) or end the pass */
+	/** Refund/chargeback: ends the pass */
 	public async revoke(userId: string, product: TProduct, sourceKey: string) {
-		if (product.kind === "pass") {
-			await Subscription.updateOne({ sourceId: sourceKey }, { $set: { active: false } });
-			return;
-		}
-		const granted = await LedgerEntry.exists({ idempotencyKey: sourceKey });
-		if (!granted) return;
-		await this.client.economy.transact([{ userId, gems: -product.gems!, allowNegative: true }], {
-			reason: "refund",
-			ref: product.id,
-			idempotencyKey: `${sourceKey}:revoke`,
-		});
+		await Subscription.updateOne({ sourceId: sourceKey }, { $set: { active: false } });
 	}
 
 	public async hasPass(userId: string) {
@@ -227,7 +211,7 @@ export default class PaymentManager {
 
 	/** Startup catch-up for consumables bought while the bot was offline */
 	public async reconcileEntitlements() {
-		if (!process.env.DISCORD_SKU_GEMS_100 && !process.env.DISCORD_SKU_FARM_PASS) return;
+		if (!process.env.DISCORD_SKU_FARM_PASS) return;
 		const unconsumed = await this.client.application?.entitlements.fetch({ excludeEnded: true }).catch(() => null);
 		for (const e of unconsumed?.values() ?? []) await this.handleEntitlement(e).catch((err) => this.client.log.error(err));
 	}

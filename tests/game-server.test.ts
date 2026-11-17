@@ -1223,6 +1223,21 @@ describe("chat", () => {
 		expect(chats(b)).toHaveLength(2);
 	});
 
+	test("a mistyped command doesn't use up the chat slot", async () => {
+		const gs = server();
+		const [a, b] = await trio(gs);
+		await say(gs, a, "/x hi");
+		expect(toasts(a).at(-1)!.msg).toBe("Unknown command. Use /g, /p, /e, /mute or /unmute.");
+		await say(gs, a, "hi");
+		expect(chats(b)).toHaveLength(1);
+	});
+
+	test("display names are sanitized once when the session starts", async () => {
+		const gs = server(store, { auth: { ...auth, verify: async () => ({ id: "n", name: "Bad\u202Ename\u0000\u200F" }) } });
+		const ws = await join(gs, "n");
+		expect(welcome(ws).you.name).toBe("Badname");
+	});
+
 	test("global rate limit 1 per 5 s", async () => {
 		const gs = server();
 		const [a, b] = await trio(gs);

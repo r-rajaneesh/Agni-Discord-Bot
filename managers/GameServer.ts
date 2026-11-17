@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import { sanitizeChat } from "../game/chat";
 import { chunkOf, dropLand } from "../game/chunks";
 import { ITEMS, STARTER_COINS, STARTER_KIT } from "../game/data/items";
 import { MAX_ENERGY, TICK_MS, currentEnergy, enter, simulate, type TDir, type TInstance, type TPlayerState } from "../game/engine";
@@ -315,7 +316,8 @@ export default class GameServer {
 		const prev = src?.player ?? stored;
 		const base: Omit<TPlayerState, "x" | "y" | "facing"> = {
 			userId,
-			name: user.name,
+			// Sanitized once here, so chat, mutes and labels all see the same plain name
+			name: sanitizeChat(user.name) || "Player",
 			energy: prev?.energy ?? MAX_ENERGY,
 			lastEnergyAt: prev?.lastEnergyAt ?? this.now(),
 			equipped: prev?.equipped ?? "hoe",

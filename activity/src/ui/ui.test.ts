@@ -3,10 +3,11 @@ import { CHUNK, unlockPrice } from "@game/chunks";
 import { createLand, createLobby } from "@game/engine";
 import type { TDir, TPlayerView, TServerMsg } from "@game/protocol";
 import { ClientState } from "../state";
-import { ChatBuffer, CHAT_KEEP } from "./chat";
+import { CHAT_KEEP, ChatPanel } from "./chat";
 import { hotbarItems } from "./hotbar";
 import { placeName } from "./hud";
 import { formatINR } from "./store";
+import { FakeElement, fake, installDom } from "./testDom";
 import { unlockTarget } from "./unlock";
 
 describe("placeName", () => {
@@ -58,10 +59,13 @@ describe("unlockTarget", () => {
 	});
 });
 
-test("chat keeps the newest 100 messages", () => {
-	const b = new ChatBuffer();
-	for (let i = 0; i < 130; i++) b.add({ t: "chat", channel: "local", from: { userId: "u", name: "u" }, text: String(i), at: i });
-	expect(b.msgs).toHaveLength(CHAT_KEEP);
-	expect(b.msgs[0]!.text).toBe("30");
-	expect(b.msgs.at(-1)!.text).toBe("129");
+test("the chat box keeps the newest 100 lines", () => {
+	installDom();
+	const parent = new FakeElement("div");
+	const chat = new ChatPanel(parent as unknown as HTMLElement, () => {});
+	for (let i = 0; i < 130; i++) chat.add({ t: "chat", channel: "local", from: { userId: "u", name: "u" }, text: String(i), at: i });
+	const lines = fake(chat.root).all("chat-text");
+	expect(lines).toHaveLength(CHAT_KEEP);
+	expect(lines[0]!.textContent).toBe("30");
+	expect(lines.at(-1)!.textContent).toBe("129");
 });

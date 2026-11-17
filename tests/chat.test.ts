@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CHAT_RADIUS, localAudience, parseChat, sanitizeChat } from "../game/chat";
+import { CHAT_MAX, CHAT_RADIUS, localAudience, parseChat, sanitizeChat } from "../game/chat";
 import { createLand, createLobby, enter } from "../game/engine";
 
 describe("parseChat", () => {
@@ -26,6 +26,15 @@ describe("parseChat", () => {
 		expect(sanitizeChat("a\u0000b‮c⁦d⁩e\u007Ff")).toBe("abcdef");
 		expect(sanitizeChat("a\nb\tc")).toBe("a b c");
 		expect(parseChat("‮‮")).toEqual({ kind: "error", msg: "Type a message." });
+		// Direction marks and the Unicode line and paragraph separators too
+		expect(sanitizeChat("a\u200Eb\u200Fc\u061Cd\u2028e\u2029f")).toBe("abcdef");
+	});
+
+	test("long text is cut at CHAT_MAX without splitting a surrogate pair", () => {
+		const cut = parseChat(`${"a".repeat(CHAT_MAX - 1)}😀b`);
+		expect(cut).toEqual({ kind: "say", channel: "local", text: "a".repeat(CHAT_MAX - 1) });
+		const whole = parseChat(`/g ${"a".repeat(CHAT_MAX - 2)}😀b`);
+		expect(whole).toEqual({ kind: "say", channel: "global", text: `${"a".repeat(CHAT_MAX - 2)}😀` });
 	});
 });
 

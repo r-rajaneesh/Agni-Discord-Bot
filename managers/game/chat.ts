@@ -21,11 +21,11 @@ export interface TChatCtx {
 export async function chat(ctx: TChatCtx, s: TSession, text: string): Promise<void> {
 	const now = ctx.now();
 	if (now - s.lastChatAt < CHAT_GAP_MS) return ctx.toast(s, "You're sending messages too fast.", false);
-	s.lastChatAt = now;
 	const cmd = parseChat(text);
+	// A typo doesn't use up the slot, so the corrected line goes straight through; mutes still count, as they write to the database
+	if (cmd.kind === "error") return ctx.toast(s, cmd.msg, false);
+	s.lastChatAt = now;
 	switch (cmd.kind) {
-		case "error":
-			return ctx.toast(s, cmd.msg, false);
 		case "mute":
 		case "unmute":
 			return mute(ctx, s, cmd.kind, cmd.name);

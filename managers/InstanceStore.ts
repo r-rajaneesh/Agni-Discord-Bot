@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { canUnlock, chunkKey, START_CHUNKS, unlockPrice } from "../game/chunks";
 import { createLand, type TDir, type TInstance, type TPlayerState, type TTileState } from "../game/engine";
 import type EconomyManager from "./EconomyManager";
-import { Land, LandTile, PlayerState } from "./models/Game";
+import { ChatLog, Land, LandTile, PlayerState } from "./models/Game";
 
 export type TLocation = { instanceKind: "land" | "world"; landId?: string; lobby?: number; x: number; y: number; facing: TDir };
 export type TStoredPlayer = TPlayerState & { location: TLocation };
@@ -88,6 +88,24 @@ export default class InstanceStore {
 	/** False when the player has no saved state */
 	async setEnergy(userId: string, energy: number, at: number): Promise<boolean> {
 		return (await PlayerState.updateOne({ userId }, { $set: { energy, lastEnergyAt: at } })).matchedCount > 0;
+	}
+
+	/** The player's mute list and global mute end (epoch ms, 0 when none) */
+	async loadChatState(userId: string): Promise<{ mutedIds: string[]; globalMutedUntil: number }> {
+		const p = await PlayerState.findOne({ userId }, { mutedIds: 1, globalMutedUntil: 1 }).lean();
+		return { mutedIds: p?.mutedIds ?? [], globalMutedUntil: p?.globalMutedUntil?.getTime() ?? 0 };
+	}
+
+	async setMutedIds(userId: string, mutedIds: string[]): Promise<void> {
+		await PlayerState.updateOne({ userId }, { $set: { mutedIds } }, { upsert: true });
+	}
+
+	async setGlobalMute(userId: string, until: number): Promise<void> {
+		await PlayerState.updateOne({ userId }, { $set: { globalMutedUntil: new Date(until) } }, { upsert: true });
+	}
+
+	async logChat(entry: { channel: "private" | "global"; fromId: string; instanceId: string; text: string; at: number }): Promise<void> {
+		await ChatLog.create({ ...entry, at: new Date(entry.at) });
 	}
 
 	/** True once the player has a saved position (has played) */

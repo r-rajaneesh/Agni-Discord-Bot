@@ -33,6 +33,9 @@ const PlayerStateSchema = new mongoose.Schema({
 	/** UTC day of the mining gem counter, and gems found that day (daily cap) */
 	gemDay: String,
 	gemsToday: Number,
+	/** Players this one has muted, and when a bot-owner mute from global chat ends */
+	mutedIds: { type: [String], default: [] },
+	globalMutedUntil: Date,
 	location: {
 		instanceKind: { type: String, enum: ["land", "world"], required: true },
 		landId: String,
@@ -43,6 +46,17 @@ const PlayerStateSchema = new mongoose.Schema({
 	},
 });
 
+// Global and private messages only, kept 30 days
+const ChatLogSchema = new mongoose.Schema({
+	channel: { type: String, enum: ["private", "global"], required: true },
+	fromId: { type: String, required: true },
+	instanceId: { type: String, required: true },
+	text: { type: String, required: true },
+	at: { type: Date, required: true },
+});
+ChatLogSchema.index({ at: 1 }, { expireAfterSeconds: 30 * 86400 });
+
 export const Land = mongoose.model("land", LandSchema);
 export const LandTile = mongoose.model("land_tile", LandTileSchema);
 export const PlayerState = mongoose.model("player_state", PlayerStateSchema);
+export const ChatLog = mongoose.model("chat_log", ChatLogSchema);
